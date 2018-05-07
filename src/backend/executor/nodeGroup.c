@@ -188,12 +188,13 @@ ExecInitGroup(Group *node, EState *estate, int eflags)
 	/*
 	 * Initialize scan slot and type.
 	 */
-	ExecCreateScanSlotFromOuterPlan(estate, &grpstate->ss);
+	ExecCreateScanSlotFromOuterPlan(estate, &grpstate->ss,
+									TTS_TYPE_VIRTUAL);
 
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &grpstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &grpstate->ss.ps, TTS_TYPE_VIRTUAL);
 	ExecAssignProjectionInfo(&grpstate->ss.ps, NULL);
 
 	/*

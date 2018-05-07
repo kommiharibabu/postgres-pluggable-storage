@@ -261,12 +261,12 @@ ExecInitValuesScan(ValuesScan *node, EState *estate, int eflags)
 	 * Get info about values list, initialize scan slot with it.
 	 */
 	tupdesc = ExecTypeFromExprList((List *) linitial(node->values_lists));
-	ExecInitScanTupleSlot(estate, &scanstate->ss, tupdesc);
+	ExecInitScanTupleSlot(estate, &scanstate->ss, tupdesc, TTS_TYPE_VIRTUAL);
 
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps, TTS_TYPE_VIRTUAL);
 	ExecAssignScanProjectionInfo(&scanstate->ss);
 
 	/*

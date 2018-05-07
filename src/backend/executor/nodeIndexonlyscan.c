@@ -533,14 +533,14 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	 * suitable data anyway.)
 	 */
 	tupDesc = ExecTypeFromTL(node->indextlist, false);
-	ExecInitScanTupleSlot(estate, &indexstate->ss, tupDesc);
+	ExecInitScanTupleSlot(estate, &indexstate->ss, tupDesc, TTS_TYPE_HEAPTUPLE);
 
 	/*
 	 * Initialize result slot, type and projection info.  The node's
 	 * targetlist will contain Vars with varno = INDEX_VAR, referencing the
 	 * scan tuple.
 	 */
-	ExecInitResultTupleSlotTL(estate, &indexstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &indexstate->ss.ps, TTS_TYPE_VIRTUAL);
 	ExecAssignScanProjectionInfoWithVarno(&indexstate->ss, INDEX_VAR);
 
 	/*

@@ -873,7 +873,7 @@ ExecPrepareTuplestoreResult(SetExprState *sexpr,
 			slotDesc = NULL;	/* keep compiler quiet */
 		}
 
-		sexpr->funcResultSlot = MakeSingleTupleTableSlot(slotDesc);
+		sexpr->funcResultSlot = MakeSingleTupleTableSlot(slotDesc, TTS_TYPE_MINIMALTUPLE);
 		MemoryContextSwitchTo(oldcontext);
 	}
 

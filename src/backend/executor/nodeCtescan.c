@@ -260,12 +260,13 @@ ExecInitCteScan(CteScan *node, EState *estate, int eflags)
 	 * table) is the same as the result rowtype of the CTE query.
 	 */
 	ExecInitScanTupleSlot(estate, &scanstate->ss,
-						  ExecGetResultType(scanstate->cteplanstate));
+						  ExecGetResultType(scanstate->cteplanstate),
+						  TTS_TYPE_MINIMALTUPLE);
 
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps, TTS_TYPE_VIRTUAL);
 	ExecAssignScanProjectionInfo(&scanstate->ss);
 
 	/*

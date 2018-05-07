@@ -223,13 +223,13 @@ ExecInitMaterial(Material *node, EState *estate, int eflags)
 	 *
 	 * material nodes only return tuples from their materialized relation.
 	 */
-	ExecInitResultTupleSlotTL(estate, &matstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &matstate->ss.ps, TTS_TYPE_MINIMALTUPLE);
 	matstate->ss.ps.ps_ProjInfo = NULL;
 
 	/*
 	 * initialize tuple type.
 	 */
-	ExecCreateScanSlotFromOuterPlan(estate, &matstate->ss);
+	ExecCreateScanSlotFromOuterPlan(estate, &matstate->ss, TTS_TYPE_MINIMALTUPLE);
 
 	return matstate;
 }

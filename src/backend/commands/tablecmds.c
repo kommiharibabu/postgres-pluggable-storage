@@ -4699,8 +4699,8 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		 * tuples are the same, the tupDescs might not be (consider ADD COLUMN
 		 * without a default).
 		 */
-		oldslot = MakeSingleTupleTableSlot(oldTupDesc);
-		newslot = MakeSingleTupleTableSlot(newTupDesc);
+		oldslot = MakeSingleTupleTableSlot(oldTupDesc, TTS_TYPE_HEAPTUPLE);
+		newslot = MakeSingleTupleTableSlot(newTupDesc, TTS_TYPE_HEAPTUPLE);
 
 		/* Preallocate values/isnull arrays */
 		i = Max(newTupDesc->natts, oldTupDesc->natts);
@@ -8483,7 +8483,7 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
 
 	econtext = GetPerTupleExprContext(estate);
 	tupdesc = RelationGetDescr(rel);
-	slot = MakeSingleTupleTableSlot(tupdesc);
+	slot = MakeSingleTupleTableSlot(tupdesc, TTS_TYPE_HEAPTUPLE);
 	econtext->ecxt_scantuple = slot;
 
 	snapshot = RegisterSnapshot(GetLatestSnapshot());

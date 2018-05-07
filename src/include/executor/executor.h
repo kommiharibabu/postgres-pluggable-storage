@@ -429,12 +429,14 @@ extern void ExecScanReScan(ScanState *node);
 /*
  * prototypes from functions in execTuples.c
  */
-extern void ExecInitResultTupleSlotTL(EState *estate, PlanState *planstate);
-extern void ExecInitScanTupleSlot(EState *estate, ScanState *scanstate, TupleDesc tupleDesc);
+extern void ExecInitResultTupleSlotTL(EState *estate, PlanState *planstate,
+						  TupleTableSlotType st);
+extern void ExecInitScanTupleSlot(EState *estate, ScanState *scanstate,
+					  TupleDesc tupledesc, TupleTableSlotType st);
 extern TupleTableSlot *ExecInitExtraTupleSlot(EState *estate,
-					   TupleDesc tupleDesc);
+					   TupleDesc tupleDesc, TupleTableSlotType st);
 extern TupleTableSlot *ExecInitNullTupleSlot(EState *estate,
-					  TupleDesc tupType);
+					  TupleDesc tupType, TupleTableSlotType st);
 extern TupleDesc ExecTypeFromTL(List *targetList, bool hasoid);
 extern TupleDesc ExecCleanTypeFromTL(List *targetList, bool hasoid);
 extern TupleDesc ExecTypeFromExprList(List *exprList);
@@ -508,7 +510,8 @@ extern void ExecConditionalAssignProjectionInfo(PlanState *planstate,
 									TupleDesc inputDesc, Index varno);
 extern void ExecFreeExprContext(PlanState *planstate);
 extern void ExecAssignScanType(ScanState *scanstate, TupleDesc tupDesc);
-extern void ExecCreateScanSlotFromOuterPlan(EState *estate, ScanState *scanstate);
+extern void ExecCreateScanSlotFromOuterPlan(EState *estate, ScanState *scanstate,
+											TupleTableSlotType tp);
 
 extern bool ExecRelationIsTargetRelation(EState *estate, Index scanrelid);
 

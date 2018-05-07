@@ -304,7 +304,7 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &nlstate->js.ps);
+	ExecInitResultTupleSlotTL(estate, &nlstate->js.ps, TTS_TYPE_VIRTUAL);
 	ExecAssignProjectionInfo(&nlstate->js.ps, NULL);
 
 	/*
@@ -332,7 +332,8 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 		case JOIN_ANTI:
 			nlstate->nl_NullInnerTupleSlot =
 				ExecInitNullTupleSlot(estate,
-									  ExecGetResultType(innerPlanState(nlstate)));
+									  ExecGetResultType(innerPlanState(nlstate)),
+									  TTS_TYPE_VIRTUAL);
 			break;
 		default:
 			elog(ERROR, "unrecognized join type: %d",

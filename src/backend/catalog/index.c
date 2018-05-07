@@ -2023,7 +2023,18 @@ FormIndexDatum(IndexInfo *indexInfo,
 		Datum		iDatum;
 		bool		isNull;
 
-		if (keycol != 0)
+		if (keycol < 0)
+		{
+			HeapTupleTableSlot *hslot = (HeapTupleTableSlot *)slot;
+
+			/* Only heap tuples have system attributes. */
+			Assert(TTS_IS_HEAPTUPLE(slot) || TTS_IS_BUFFERTUPLE(slot));
+
+			iDatum = heap_getsysattr(hslot->tuple, keycol,
+									 slot->tts_tupleDescriptor,
+									 &isNull);
+		}
+		else if (keycol != 0)
 		{
 			/*
 			 * Plain index column; get the value we need directly from the
@@ -2492,7 +2503,8 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 	 */
 	estate = CreateExecutorState();
 	econtext = GetPerTupleExprContext(estate);
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation));
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation),
+									TTS_TYPE_HEAPTUPLE);
 
 	/* Arrange for econtext's scan tuple to be the tuple under test */
 	econtext->ecxt_scantuple = slot;
@@ -2979,7 +2991,8 @@ IndexCheckExclusion(Relation heapRelation,
 	 */
 	estate = CreateExecutorState();
 	econtext = GetPerTupleExprContext(estate);
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation));
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation),
+									TTS_TYPE_HEAPTUPLE);
 
 	/* Arrange for econtext's scan tuple to be the tuple under test */
 	econtext->ecxt_scantuple = slot;
@@ -3297,7 +3310,8 @@ validate_index_heapscan(Relation heapRelation,
 	 */
 	estate = CreateExecutorState();
 	econtext = GetPerTupleExprContext(estate);
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation));
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation),
+									TTS_TYPE_HEAPTUPLE);
 
 	/* Arrange for econtext's scan tuple to be the tuple under test */
 	econtext->ecxt_scantuple = slot;

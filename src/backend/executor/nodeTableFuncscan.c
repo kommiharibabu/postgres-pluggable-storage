@@ -147,12 +147,14 @@ ExecInitTableFuncScan(TableFuncScan *node, EState *estate, int eflags)
 								 tf->coltypmods,
 								 tf->colcollations);
 	/* and the corresponding scan slot */
-	ExecInitScanTupleSlot(estate, &scanstate->ss, tupdesc);
+	ExecInitScanTupleSlot(estate, &scanstate->ss, tupdesc,
+						  TTS_TYPE_MINIMALTUPLE);
 
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps,
+							  TTS_TYPE_VIRTUAL);
 	ExecAssignScanProjectionInfo(&scanstate->ss);
 
 	/*

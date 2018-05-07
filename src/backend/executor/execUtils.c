@@ -595,7 +595,7 @@ ExecAssignScanType(ScanState *scanstate, TupleDesc tupDesc)
  * ----------------
  */
 void
-ExecCreateScanSlotFromOuterPlan(EState *estate, ScanState *scanstate)
+ExecCreateScanSlotFromOuterPlan(EState *estate, ScanState *scanstate, TupleTableSlotType tp)
 {
 	PlanState  *outerPlan;
 	TupleDesc	tupDesc;
@@ -603,7 +603,7 @@ ExecCreateScanSlotFromOuterPlan(EState *estate, ScanState *scanstate)
 	outerPlan = outerPlanState(scanstate);
 	tupDesc = ExecGetResultType(outerPlan);
 
-	ExecInitScanTupleSlot(estate, scanstate, tupDesc);
+	ExecInitScanTupleSlot(estate, scanstate, tupDesc, tp);
 }
 
 /* ----------------------------------------------------------------

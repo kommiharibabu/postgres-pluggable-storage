@@ -4490,7 +4490,8 @@ ProjIndexIsUnchanged(Relation relation, HeapTuple oldtup, HeapTuple newtup)
 	List	   *indexoidlist = RelationGetIndexList(relation);
 	EState	   *estate = CreateExecutorState();
 	ExprContext *econtext = GetPerTupleExprContext(estate);
-	TupleTableSlot *slot = MakeSingleTupleTableSlot(RelationGetDescr(relation));
+	TupleTableSlot *slot = MakeSingleTupleTableSlot(RelationGetDescr(relation),
+													TTS_TYPE_HEAPTUPLE);
 	bool		equals = true;
 	Datum		old_values[INDEX_MAX_KEYS];
 	bool		old_isnull[INDEX_MAX_KEYS];

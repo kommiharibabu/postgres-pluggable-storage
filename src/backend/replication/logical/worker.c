@@ -212,7 +212,8 @@ create_estate_for_relation(LogicalRepRelMapEntry *rel)
 
 	/* Triggers might need a slot */
 	if (resultRelInfo->ri_TrigDesc)
-		estate->es_trig_tuple_slot = ExecInitExtraTupleSlot(estate, NULL);
+		estate->es_trig_tuple_slot = ExecInitExtraTupleSlot(estate, NULL,
+															TTS_TYPE_VIRTUAL);
 
 	/* Prepare to catch AFTER triggers. */
 	AfterTriggerBeginQuery();
@@ -608,7 +609,8 @@ apply_handle_insert(StringInfo s)
 	/* Initialize the executor state. */
 	estate = create_estate_for_relation(rel);
 	remoteslot = ExecInitExtraTupleSlot(estate,
-										RelationGetDescr(rel->localrel));
+										RelationGetDescr(rel->localrel),
+										TTS_TYPE_VIRTUAL);
 
 	/* Process and store remote tuple in the slot */
 	oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
@@ -712,9 +714,11 @@ apply_handle_update(StringInfo s)
 	/* Initialize the executor state. */
 	estate = create_estate_for_relation(rel);
 	remoteslot = ExecInitExtraTupleSlot(estate,
-										RelationGetDescr(rel->localrel));
+										RelationGetDescr(rel->localrel),
+										TTS_TYPE_VIRTUAL);
 	localslot = ExecInitExtraTupleSlot(estate,
-									   RelationGetDescr(rel->localrel));
+									   RelationGetDescr(rel->localrel),
+									   TTS_TYPE_HEAPTUPLE);
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1);
 
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -753,7 +757,7 @@ apply_handle_update(StringInfo s)
 	{
 		/* Process and store remote tuple in the slot */
 		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-		ExecStoreTuple(localslot->tts_tuple, remoteslot, InvalidBuffer, false);
+		ExecCopySlot(localslot, remoteslot);
 		slot_modify_cstrings(remoteslot, rel, newtup.values, newtup.changed);
 		MemoryContextSwitchTo(oldctx);
 
@@ -830,9 +834,11 @@ apply_handle_delete(StringInfo s)
 	/* Initialize the executor state. */
 	estate = create_estate_for_relation(rel);
 	remoteslot = ExecInitExtraTupleSlot(estate,
-										RelationGetDescr(rel->localrel));
+										RelationGetDescr(rel->localrel),
+										TTS_TYPE_VIRTUAL);
 	localslot = ExecInitExtraTupleSlot(estate,
-									   RelationGetDescr(rel->localrel));
+									   RelationGetDescr(rel->localrel),
+									   TTS_TYPE_HEAPTUPLE);
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1);
 
 	PushActiveSnapshot(GetTransactionSnapshot());

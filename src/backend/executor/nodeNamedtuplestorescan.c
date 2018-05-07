@@ -138,8 +138,9 @@ ExecInitNamedTuplestoreScan(NamedTuplestoreScan *node, EState *estate, int eflag
 	 * Tuple table and result type initialization. The scan tuple type is
 	 * specified for the tuplestore.
 	 */
-	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps);
-	ExecInitScanTupleSlot(estate, &scanstate->ss, scanstate->tupdesc);
+	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps, TTS_TYPE_VIRTUAL);
+	ExecInitScanTupleSlot(estate, &scanstate->ss, scanstate->tupdesc,
+						  TTS_TYPE_MINIMALTUPLE);
 
 	/*
 	 * initialize child expressions

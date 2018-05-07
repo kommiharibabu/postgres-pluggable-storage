@@ -2321,6 +2321,7 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 		HeapTupleData rettupdata;
 		TupOutputState *tstate;
 		TupleTableSlot *slot;
+		uint32		off;
 
 		if (fcinfo.isnull)
 			elog(ERROR, "procedure returned null record");
@@ -2337,7 +2338,12 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 		rettupdata.t_tableOid = InvalidOid;
 		rettupdata.t_data = td;
 
-		slot = ExecStoreTuple(&rettupdata, tstate->slot, InvalidBuffer, false);
+		/* Save the tuple in virtual tuple table slot. */
+		slot = tstate->slot;
+		Assert(TTS_IS_VIRTUAL(slot));
+		slot_deform_tuple(slot, &rettupdata, &off, retdesc->natts);
+		ExecStoreVirtualTuple(slot);
+
 		tstate->dest->receiveSlot(slot, tstate->dest);
 
 		end_tup_output(tstate);

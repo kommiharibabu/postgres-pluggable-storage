@@ -129,12 +129,14 @@ ExecInitSubqueryScan(SubqueryScan *node, EState *estate, int eflags)
 	 * Initialize scan slot and type (needed by ExecInitResultTupleSlotTL)
 	 */
 	ExecInitScanTupleSlot(estate, &subquerystate->ss,
-						  ExecGetResultType(subquerystate->subplan));
+						  ExecGetResultType(subquerystate->subplan),
+						  TTS_TYPE_HEAPTUPLE); /* FIXME */
 
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &subquerystate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &subquerystate->ss.ps,
+							  TTS_TYPE_VIRTUAL);
 	ExecAssignScanProjectionInfo(&subquerystate->ss);
 
 	/*

@@ -643,13 +643,14 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &hjstate->js.ps);
+	ExecInitResultTupleSlotTL(estate, &hjstate->js.ps, TTS_TYPE_VIRTUAL);
 	ExecAssignProjectionInfo(&hjstate->js.ps, NULL);
 
 	/*
 	 * tuple table initialization
 	 */
-	hjstate->hj_OuterTupleSlot = ExecInitExtraTupleSlot(estate, outerDesc);
+	hjstate->hj_OuterTupleSlot = ExecInitExtraTupleSlot(estate, outerDesc,
+														TTS_TYPE_MINIMALTUPLE);
 
 	/*
 	 * detect whether we need only consider the first matching inner tuple
@@ -666,17 +667,17 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 		case JOIN_LEFT:
 		case JOIN_ANTI:
 			hjstate->hj_NullInnerTupleSlot =
-				ExecInitNullTupleSlot(estate, innerDesc);
+				ExecInitNullTupleSlot(estate, innerDesc, TTS_TYPE_VIRTUAL);
 			break;
 		case JOIN_RIGHT:
 			hjstate->hj_NullOuterTupleSlot =
-				ExecInitNullTupleSlot(estate, outerDesc);
+				ExecInitNullTupleSlot(estate, outerDesc, TTS_TYPE_VIRTUAL);
 			break;
 		case JOIN_FULL:
 			hjstate->hj_NullOuterTupleSlot =
-				ExecInitNullTupleSlot(estate, outerDesc);
+				ExecInitNullTupleSlot(estate, outerDesc, TTS_TYPE_VIRTUAL);
 			hjstate->hj_NullInnerTupleSlot =
-				ExecInitNullTupleSlot(estate, innerDesc);
+				ExecInitNullTupleSlot(estate, innerDesc, TTS_TYPE_VIRTUAL);
 			break;
 		default:
 			elog(ERROR, "unrecognized join type: %d",

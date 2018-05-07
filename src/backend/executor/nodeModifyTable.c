@@ -2053,6 +2053,13 @@ ExecModifyTable(PlanState *pstate)
 				break;
 		}
 
+		if (node->mt_scan->tts_tupleDescriptor != planSlot->tts_tupleDescriptor)
+			ExecSetSlotDescriptor(node->mt_scan, planSlot->tts_tupleDescriptor);
+
+		ExecStoreTuple(ExecCopySlotTuple(planSlot), node->mt_scan,
+					   InvalidBuffer, true);
+		planSlot = node->mt_scan;
+
 		/*
 		 * If resultRelInfo->ri_usesFdwDirectModify is true, all we need to do
 		 * here is compute the RETURNING expressions.
@@ -2249,6 +2256,8 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	EvalPlanQualInit(&mtstate->mt_epqstate, estate, NULL, NIL, node->epqParam);
 	mtstate->fireBSTriggers = true;
 
+	mtstate->mt_scan = ExecInitExtraTupleSlot(mtstate->ps.state, NULL, TTS_TYPE_HEAPTUPLE);
+
 	/*
 	 * call ExecInitNode on each of the plans to be executed and save the
 	 * results into the array "mt_plans".  This is also a convenient place to
@@ -2401,7 +2410,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		mtstate->ps.plan->targetlist = (List *) linitial(node->returningLists);
 
 		/* Set up a slot for the output of the RETURNING projection(s) */
-		ExecInitResultTupleSlotTL(estate, &mtstate->ps);
+		ExecInitResultTupleSlotTL(estate, &mtstate->ps, TTS_TYPE_VIRTUAL);
 		slot = mtstate->ps.ps_ResultTupleSlot;
 
 		/* Need an econtext too */
@@ -2431,7 +2440,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		 * expects one (maybe should change that?).
 		 */
 		mtstate->ps.plan->targetlist = NIL;
-		ExecInitResultTupleSlotTL(estate, &mtstate->ps);
+		ExecInitResultTupleSlotTL(estate, &mtstate->ps, TTS_TYPE_VIRTUAL);
 
 		mtstate->ps.ps_ExprContext = NULL;
 	}
@@ -2470,7 +2479,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		mtstate->mt_existing =
 			ExecInitExtraTupleSlot(mtstate->ps.state,
 								   mtstate->mt_partition_tuple_routing ?
-								   NULL : relationDesc);
+								   NULL : relationDesc, TTS_TYPE_BUFFER);
 
 		/* carried forward solely for the benefit of explain */
 		mtstate->mt_excludedtlist = node->exclRelTlist;
@@ -2492,7 +2501,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		mtstate->mt_conflproj =
 			ExecInitExtraTupleSlot(mtstate->ps.state,
 								   mtstate->mt_partition_tuple_routing ?
-								   NULL : tupDesc);
+								   NULL : tupDesc, TTS_TYPE_VIRTUAL);
 		resultRelInfo->ri_onConflict->oc_ProjTupdesc = tupDesc;
 
 		/* build UPDATE SET projection state */
@@ -2603,7 +2612,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 
 				j = ExecInitJunkFilter(subplan->targetlist,
 									   resultRelInfo->ri_RelationDesc->rd_att->tdhasoid,
-									   ExecInitExtraTupleSlot(estate, NULL));
+									   ExecInitExtraTupleSlot(estate, NULL, TTS_TYPE_HEAPTUPLE));
 
 				if (operation == CMD_UPDATE || operation == CMD_DELETE)
 				{
@@ -2653,7 +2662,8 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * we keep it in the estate.
 	 */
 	if (estate->es_trig_tuple_slot == NULL)
-		estate->es_trig_tuple_slot = ExecInitExtraTupleSlot(estate, NULL);
+		estate->es_trig_tuple_slot = ExecInitExtraTupleSlot(estate, NULL,
+															TTS_TYPE_HEAPTUPLE);
 
 	/*
 	 * Lastly, if this is not the primary (canSetTag) ModifyTable node, add it

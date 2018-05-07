@@ -211,13 +211,13 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
 	/*
 	 * Initialize scan slot and type.
 	 */
-	ExecCreateScanSlotFromOuterPlan(estate, &sortstate->ss);
+	ExecCreateScanSlotFromOuterPlan(estate, &sortstate->ss, TTS_TYPE_VIRTUAL);
 
 	/*
 	 * Initialize return slot and type. No need to initialize projection info
 	 * because this node doesn't do projections.
 	 */
-	ExecInitResultTupleSlotTL(estate, &sortstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &sortstate->ss.ps, TTS_TYPE_MINIMALTUPLE);
 	sortstate->ss.ps.ps_ProjInfo = NULL;
 
 	SO1_printf("ExecInitSort: %s\n",

@@ -14,6 +14,7 @@
 
 #include "access/relscan.h"
 #include "access/sysattr.h"
+#include "access/htup_details.h"
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "utils/builtins.h"
@@ -208,28 +209,29 @@ execCurrentOf(CurrentOfExpr *cexpr,
 			Datum		ldatum;
 			bool		lisnull;
 			ItemPointer tuple_tid;
+			HeapTupleTableSlot *hslot;
 
-#ifdef USE_ASSERT_CHECKING
-			if (!slot_getsysattr(scanstate->ss_ScanTupleSlot,
-								 TableOidAttributeNumber,
-								 &ldatum,
-								 &lisnull))
+			/* Only a heap tuple has system attributes. */
+			if (!TTS_IS_HEAPTUPLE(scanstate->ss_ScanTupleSlot) &&
+				!TTS_IS_BUFFERTUPLE(scanstate->ss_ScanTupleSlot))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_CURSOR_STATE),
 						 errmsg("cursor \"%s\" is not a simply updatable scan of table \"%s\"",
 								cursor_name, table_name)));
+
+			hslot = (HeapTupleTableSlot *)scanstate->ss_ScanTupleSlot;
+#ifdef USE_ASSERT_CHECKING
+			ldatum = heap_getsysattr(hslot->tuple, TableOidAttributeNumber,
+									 scanstate->ss_ScanTupleSlot->tts_tupleDescriptor,
+									 &lisnull);
 			Assert(!lisnull);
 			Assert(DatumGetObjectId(ldatum) == table_oid);
 #endif
 
-			if (!slot_getsysattr(scanstate->ss_ScanTupleSlot,
-								 SelfItemPointerAttributeNumber,
-								 &ldatum,
-								 &lisnull))
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_CURSOR_STATE),
-						 errmsg("cursor \"%s\" is not a simply updatable scan of table \"%s\"",
-								cursor_name, table_name)));
+			ldatum = heap_getsysattr(hslot->tuple,
+									 SelfItemPointerAttributeNumber,
+									 scanstate->ss_ScanTupleSlot->tts_tupleDescriptor,
+									 &lisnull);
 			Assert(!lisnull);
 			tuple_tid = (ItemPointer) DatumGetPointer(ldatum);
 

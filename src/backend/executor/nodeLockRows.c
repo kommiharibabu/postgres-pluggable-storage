@@ -384,7 +384,7 @@ ExecInitLockRows(LockRows *node, EState *estate, int eflags)
 	 * Tuple table initialization (XXX not actually used, but upper nodes
 	 * access it to get this node's result tupledesc...)
 	 */
-	ExecInitResultTupleSlotTL(estate, &lrstate->ps);
+	ExecInitResultTupleSlotTL(estate, &lrstate->ps, TTS_TYPE_VIRTUAL);
 
 	/*
 	 * then initialize outer plan

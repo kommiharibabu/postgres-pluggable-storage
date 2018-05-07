@@ -94,13 +94,14 @@ ExecInitGather(Gather *node, EState *estate, int eflags)
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &gatherstate->ps);
+	ExecInitResultTupleSlotTL(estate, &gatherstate->ps, TTS_TYPE_VIRTUAL);
 	ExecConditionalAssignProjectionInfo(&gatherstate->ps, tupDesc, OUTER_VAR);
 
 	/*
 	 * Initialize funnel slot to same tuple descriptor as outer plan.
 	 */
-	gatherstate->funnel_slot = ExecInitExtraTupleSlot(estate, tupDesc);
+	gatherstate->funnel_slot = ExecInitExtraTupleSlot(estate, tupDesc,
+													  TTS_TYPE_HEAPTUPLE);
 
 	/*
 	 * Gather doesn't support checking a qual (it's always more efficient to

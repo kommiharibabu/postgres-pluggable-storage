@@ -119,7 +119,7 @@ ExecInitGatherMerge(GatherMerge *node, EState *estate, int eflags)
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &gm_state->ps);
+	ExecInitResultTupleSlotTL(estate, &gm_state->ps, TTS_TYPE_VIRTUAL);
 	ExecConditionalAssignProjectionInfo(&gm_state->ps, tupDesc, OUTER_VAR);
 
 	/*
@@ -403,7 +403,8 @@ gather_merge_setup(GatherMergeState *gm_state)
 
 		/* Initialize tuple slot for worker */
 		gm_state->gm_slots[i + 1] =
-			ExecInitExtraTupleSlot(gm_state->ps.state, gm_state->tupDesc);
+			ExecInitExtraTupleSlot(gm_state->ps.state, gm_state->tupDesc,
+				TTS_TYPE_HEAPTUPLE);
 	}
 
 	/* Allocate the resources for the merge */

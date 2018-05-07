@@ -229,7 +229,7 @@ ExecInitRecursiveUnion(RecursiveUnion *node, EState *estate, int eflags)
 	 * RecursiveUnion nodes still have Result slots, which hold pointers to
 	 * tuples, so we have to initialize them.
 	 */
-	ExecInitResultTupleSlotTL(estate, &rustate->ps);
+	ExecInitResultTupleSlotTL(estate, &rustate->ps, TTS_TYPE_VIRTUAL);
 
 	/*
 	 * Initialize result tuple type.  (Note: we have to set up the result type

@@ -1403,7 +1403,8 @@ find_hash_columns(AggState *aggstate)
 							  &perhash->eqfuncoids,
 							  &perhash->hashfunctions);
 		perhash->hashslot =
-			ExecAllocTableSlot(&estate->es_tupleTable, hashDesc);
+			ExecAllocTableSlot(&estate->es_tupleTable, hashDesc,
+							   TTS_TYPE_MINIMALTUPLE);
 
 		list_free(hashTlist);
 		bms_free(colnos);
@@ -2212,15 +2213,16 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 	/*
 	 * initialize source tuple type.
 	 */
-	ExecCreateScanSlotFromOuterPlan(estate, &aggstate->ss);
+	ExecCreateScanSlotFromOuterPlan(estate, &aggstate->ss, TTS_TYPE_HEAPTUPLE);
 	scanDesc = aggstate->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
 	if (node->chain)
-		aggstate->sort_slot = ExecInitExtraTupleSlot(estate, scanDesc);
+		aggstate->sort_slot = ExecInitExtraTupleSlot(estate, scanDesc,
+													 TTS_TYPE_MINIMALTUPLE);
 
 	/*
 	 * Initialize result type, slot and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &aggstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &aggstate->ss.ps, TTS_TYPE_VIRTUAL);
 	ExecAssignProjectionInfo(&aggstate->ss.ps, NULL);
 
 	/*
@@ -3063,7 +3065,8 @@ build_pertrans_for_aggref(AggStatePerTrans pertrans,
 	{
 		pertrans->sortdesc = ExecTypeFromTL(aggref->args, false);
 		pertrans->sortslot =
-			ExecInitExtraTupleSlot(estate, pertrans->sortdesc);
+			ExecInitExtraTupleSlot(estate, pertrans->sortdesc,
+								   TTS_TYPE_MINIMALTUPLE);
 	}
 
 	if (numSortCols > 0)
@@ -3085,7 +3088,8 @@ build_pertrans_for_aggref(AggStatePerTrans pertrans,
 		{
 			/* we will need an extra slot to store prior values */
 			pertrans->uniqslot =
-				ExecInitExtraTupleSlot(estate, pertrans->sortdesc);
+				ExecInitExtraTupleSlot(estate, pertrans->sortdesc,
+									   TTS_TYPE_MINIMALTUPLE);
 		}
 
 		/* Extract the sort information for use later */

@@ -141,7 +141,7 @@ ExecInitUnique(Unique *node, EState *estate, int eflags)
 	 * Initialize result slot and type. Unique nodes do no projections, so
 	 * initialize projection info for this node appropriately.
 	 */
-	ExecInitResultTupleSlotTL(estate, &uniquestate->ps);
+	ExecInitResultTupleSlotTL(estate, &uniquestate->ps, TTS_TYPE_VIRTUAL);
 	uniquestate->ps.ps_ProjInfo = NULL;
 
 	/*

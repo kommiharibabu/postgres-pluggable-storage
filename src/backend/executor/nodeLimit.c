@@ -371,7 +371,8 @@ ExecInitLimit(Limit *node, EState *estate, int eflags)
 	 * Initialize result slot and type. (XXX not actually used, but upper
 	 * nodes access it to get this node's result tupledesc...)
 	 */
-	ExecInitResultTupleSlotTL(estate, &limitstate->ps);
+	ExecInitResultTupleSlotTL(estate, &limitstate->ps,
+							  TTS_TYPE_VIRTUAL);
 
 	/*
 	 * limit nodes do no projections, so initialize projection info for this

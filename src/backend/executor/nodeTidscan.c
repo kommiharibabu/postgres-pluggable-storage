@@ -549,12 +549,13 @@ ExecInitTidScan(TidScan *node, EState *estate, int eflags)
 	 * get the scan type from the relation descriptor.
 	 */
 	ExecInitScanTupleSlot(estate, &tidstate->ss,
-						  RelationGetDescr(currentRelation));
+						  RelationGetDescr(currentRelation),
+						  TTS_TYPE_BUFFER);
 
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &tidstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &tidstate->ss.ps, TTS_TYPE_VIRTUAL);
 	ExecAssignScanProjectionInfo(&tidstate->ss);
 
 	/*

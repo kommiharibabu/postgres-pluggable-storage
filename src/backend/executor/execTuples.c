@@ -82,19 +82,891 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/tupdesc_details.h"
 #include "access/tuptoaster.h"
 #include "funcapi.h"
 #include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
+#include "utils/datum.h" /* TODO: Included for datumCopy(), remove if that function is not used. */
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
 
 
 static TupleDesc ExecTypeFromTLInternal(List *targetList,
 					   bool hasoid, bool skipjunk);
+static void slot_deform_tuple_ex(TupleTableSlot *slot, HeapTuple tuple,
+					 uint32 *offp, int attnum);
 
+
+/*
+ * Fill in missing values for a TupleTableSlot.
+ *
+ * This is only exposed because it's needed for JIT compiled tuple
+ * deforming. That exception aside, there should be no callers outside of this
+ * file.
+ */
+void
+slot_getmissingattrs(TupleTableSlot *slot, int startAttNum, int lastAttNum)
+{
+	AttrMissing *attrmiss = NULL;
+	int			missattnum;
+
+	if (slot->tts_tupleDescriptor->constr)
+		attrmiss = slot->tts_tupleDescriptor->constr->missing;
+
+	if (!attrmiss)
+	{
+		/* no missing values array at all, so just fill everything in as NULL */
+		memset(slot->tts_values + startAttNum, 0,
+			   (lastAttNum - startAttNum) * sizeof(Datum));
+		memset(slot->tts_isnull + startAttNum, 1,
+			   (lastAttNum - startAttNum) * sizeof(bool));
+	}
+	else
+	{
+		/* if there is a missing values array we must process them one by one */
+		for (missattnum = startAttNum;
+			 missattnum < lastAttNum;
+			 missattnum++)
+		{
+			slot->tts_values[missattnum] = attrmiss[missattnum].am_value;
+			slot->tts_isnull[missattnum] = !attrmiss[missattnum].am_present;
+		}
+	}
+}
+
+/*
+ * TODO: rename this better. This acts as wrapper, which replaces earlier
+ * slot_getallattrs() or slot_getsomeattrs(), around slot_deform_tuple().
+ */
+static void
+slot_deform_tuple_ex(TupleTableSlot *slot, HeapTuple tuple, uint32 *offp,
+					 int attnum)
+{
+	int			attno;
+
+	/* Quick out if we have 'em all already */
+	if (slot->tts_nvalid >= attnum)
+		return;
+
+	/* Check for caller error */
+	if (attnum <= 0 || attnum > slot->tts_tupleDescriptor->natts)
+		elog(ERROR, "invalid attribute number %d", attnum);
+
+	/*
+	 * otherwise we had better have a physical tuple (tts_nvalid should equal
+	 * natts in all virtual-tuple cases)
+	 */
+	if (tuple == NULL)			/* internal error */
+		elog(ERROR, "cannot extract attribute from empty tuple slot");
+
+	/*
+	 * load up any slots available from physical tuple
+	 */
+	attno = HeapTupleHeaderGetNatts(tuple->t_data);
+	attno = Min(attno, attnum);
+
+	slot_deform_tuple(slot, tuple, offp, attno);
+
+	attno = slot->tts_nvalid;
+
+	/*
+	 * If tuple doesn't have all the atts indicated by attnum, read the rest
+	 * as NULLs or missing values
+	 */
+	if (attno < attnum)
+		slot_getmissingattrs(slot, attno, attnum);
+
+	slot->tts_nvalid = attnum;
+}
+
+/*
+ * TupleTableSlotOps implementations.
+ */
+
+/*
+ * TupleTableSlotOps implementation for VirtualTupleTableSlot.
+ */
+static void
+tts_virtual_init(TupleTableSlot *slot)
+{
+}
+
+static void
+tts_virtual_release(TupleTableSlot *slot)
+{
+}
+
+/*
+ * TODO: If the datums were deep copied, we need to free those.
+ */
+static void
+tts_virtual_clear(TupleTableSlot *slot)
+{
+	slot->tts_nvalid = 0;
+	SET_TTS_EMPTY(slot);
+}
+
+/*
+ * Attribute values are readily available in tts_values and tts_isnull array
+ * in a VirtualTupleTableSlot. So there should be no need to call this
+ * function.
+ */
+static void
+tts_virtual_getsomeattrs(TupleTableSlot *slot, int natts)
+{
+	elog(ERROR, "getsomeattrs is not required to be called on a virtual tuple table slot");
+}
+
+/*
+ * VirtualTupleTableSlot stores the individual attribute values in tts_values
+ * and tts_isnull arrays. Unlike other TupleTableSlot types it does not have
+ * any separate storage to materialize into. Hence it doesn't support
+ * materialize method.
+ *
+ * TODO:
+ * But we might want to save the contents of tts_values and tts_isnull into the
+ * memory context of a VirtualTupleTableSlot when requested. But as of now, we
+ * do not see any need for the same.
+ */
+static void
+tts_virtual_materialize(TupleTableSlot *slot)
+{
+	elog(ERROR, "materializing a virtual tuple is not supported");
+}
+
+/*
+ * TODO: Earlier versions of ExecMaterializeSlot(), which used to return a heap
+ * tuple combing tts_values and tts_isnull, the heap tuple once created was
+ * cached and reused till it was freed. But in this call we are creating a new
+ * heap tuple every time. This might leak memory. Do we want to cache the
+ * created heap tuple in the memory context specific for this slot? In order to
+ * do that, we need to answer the question as to whether a heap tuple can be
+ * requested multiple times from a VirtualTupleTableSlot.
+ *
+ * Similarly for tts_virtual_get_minimal_tuple().
+ */
+static HeapTuple
+tts_virtual_get_heap_tuple(TupleTableSlot *slot)
+{
+	Assert(!IS_TTS_EMPTY(slot));
+
+	return heap_form_tuple(slot->tts_tupleDescriptor,
+						   slot->tts_values,
+						   slot->tts_isnull);
+
+}
+
+static MinimalTuple
+tts_virtual_get_minimal_tuple(TupleTableSlot *slot)
+{
+	Assert(!IS_TTS_EMPTY(slot));
+
+	return heap_form_minimal_tuple(slot->tts_tupleDescriptor,
+								   slot->tts_values,
+								   slot->tts_isnull);
+}
+
+static HeapTuple
+tts_virtual_copy_heap_tuple(TupleTableSlot *slot)
+{
+	Assert(!IS_TTS_EMPTY(slot));
+
+	return heap_form_tuple(slot->tts_tupleDescriptor,
+						   slot->tts_values,
+						   slot->tts_isnull);
+
+}
+
+static MinimalTuple
+tts_virtual_copy_minimal_tuple(TupleTableSlot *slot)
+{
+	Assert(!IS_TTS_EMPTY(slot));
+
+	return heap_form_minimal_tuple(slot->tts_tupleDescriptor,
+								   slot->tts_values,
+								   slot->tts_isnull);
+}
+
+/*
+ * TupleTableSlotOps implementation for HeapTupleTableSlot.
+ */
+
+static void
+tts_heap_init(TupleTableSlot *slot)
+{
+}
+
+static void
+tts_heap_release(TupleTableSlot *slot)
+{
+}
+
+static void
+tts_heap_clear(TupleTableSlot *slot)
+{
+	HeapTupleTableSlot *hslot = (HeapTupleTableSlot *) slot;
+
+	/* Free the memory for the heap tuple if it's allowed. */
+	if (IS_TTS_SHOULDFREE(slot))
+	{
+		heap_freetuple(hslot->tuple);
+		RESET_TTS_SHOULDFREE(slot);
+	}
+
+	slot->tts_nvalid = 0;
+	SET_TTS_EMPTY(slot);
+	hslot->off = 0;
+	hslot->tuple = NULL;
+}
+
+static void
+tts_heap_getsomeattrs(TupleTableSlot *slot, int natts)
+{
+	HeapTupleTableSlot *hslot = (HeapTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+
+	slot_deform_tuple_ex(slot, hslot->tuple, &hslot->off, natts);
+}
+
+/*
+ * Materialize the heap tuple contained in the given slot into its own memory
+ * context.
+ */
+static void
+tts_heap_materialize(TupleTableSlot *slot)
+{
+	HeapTupleTableSlot *hslot = (HeapTupleTableSlot *) slot;
+	MemoryContext oldContext;
+
+	Assert(!IS_TTS_EMPTY(slot));
+
+	/* This slot has it's tuple already materialized. Nothing to do. */
+	if (IS_TTS_SHOULDFREE(slot))
+		return;
+
+	SET_TTS_SHOULDFREE(slot);
+	oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
+
+	if (!hslot->tuple)
+		hslot->tuple = heap_form_tuple(slot->tts_tupleDescriptor,
+									   slot->tts_values,
+									   slot->tts_isnull);
+	else
+	{
+		/*
+		 * The tuple contained in this slot is not allocated in the memory
+		 * context of the given slot (else it would have TTS_SHOULDFREE set).
+		 * Copy the tuple into the given slot's memory context.
+		 */
+		hslot->tuple = heap_copytuple(hslot->tuple);
+	}
+
+	slot->tts_nvalid = 0;
+	hslot->off = 0;
+
+	MemoryContextSwitchTo(oldContext);
+}
+
+/*
+ * Return the heap tuple in the slot as is if it contains one. Otherwise,
+ * materialize a heap tuple using contents of the slot and return it.
+ */
+static HeapTuple
+tts_heap_get_heap_tuple(TupleTableSlot *slot)
+{
+	HeapTupleTableSlot *hslot = (HeapTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+	if (!hslot->tuple)
+		tts_heap_materialize(slot);
+
+	return hslot->tuple;
+}
+
+/*
+ * Return a minimal tuple constructed from the contents of the slot.
+ *
+ * TODO: This function will always construct a new minimal tuple and return it.
+ * If called more than once on the given slot without changing the contents, we
+ * will leak memory. Need to figure out whether that's true.
+ */
+static MinimalTuple
+tts_heap_get_minimal_tuple(TupleTableSlot *slot)
+{
+	HeapTupleTableSlot *hslot = (HeapTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+	if (!hslot->tuple)
+		tts_heap_materialize(slot);
+
+	return minimal_tuple_from_heap_tuple(hslot->tuple);
+}
+
+/*
+ * Return a copy of heap tuple contained in the slot, materialising one if
+ * necessary.
+ */
+static HeapTuple
+tts_heap_copy_heap_tuple(TupleTableSlot *slot)
+{
+	HeapTupleTableSlot *hslot = (HeapTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+	if (!hslot->tuple)
+		tts_heap_materialize(slot);
+
+	return heap_copytuple(hslot->tuple);
+}
+
+/*
+ * Return a minimal tuple constructed from the contents of the slot.
+ *
+ * We always return a new minimal tuple so no copy, per say, is needed.
+ *
+ * TODO:
+ * This function is exact copy of tts_heap_get_minimal_tuple() and thus the
+ * callback should point to that one instead of a new implementation. But
+ * there's one TODO there which might change tts_heap_get_minimal_tuple().
+ */
+static MinimalTuple
+tts_heap_copy_minimal_tuple(TupleTableSlot *slot)
+{
+	HeapTupleTableSlot *hslot = (HeapTupleTableSlot *) slot;
+
+	if (!hslot->tuple)
+		tts_heap_materialize(slot);
+
+	return minimal_tuple_from_heap_tuple(hslot->tuple);
+}
+
+/*
+ * Store the given tuple into the given HeapTupleTableSlot. If the slot
+ * already contains a tuple, we will free the memory for the same before
+ * storing a new one there.
+ */
+static void
+tts_heap_store_tuple(TupleTableSlot *slot, HeapTuple tuple, bool shouldFree)
+{
+	HeapTupleTableSlot *hslot = (HeapTupleTableSlot *) slot;
+
+	tts_heap_clear(slot);
+
+	slot->tts_nvalid = 0;
+	hslot->tuple = tuple;
+	hslot->off = 0;
+	RESET_TTS_EMPTY(slot);
+
+	if (shouldFree)
+		SET_TTS_SHOULDFREE(slot);
+}
+
+
+/*
+ * TODO:
+ * We set mslot->tuple = &mslot->minhdr everywhere when we store a minimal
+ * tuple in the slot or localize it. So, either that statement is not needed
+ * here OR it's not needed in those functions.
+ *
+ */
+static void
+tts_minimal_init(TupleTableSlot *slot)
+{
+	MinimalTupleTableSlot *mslot = (MinimalTupleTableSlot *) slot;
+
+	mslot->tuple = &mslot->minhdr;
+}
+
+static void
+tts_minimal_release(TupleTableSlot *slot)
+{
+}
+
+static void
+tts_minimal_clear(TupleTableSlot *slot)
+{
+	MinimalTupleTableSlot *mslot = (MinimalTupleTableSlot *) slot;
+
+	/* FIXME */
+	/*
+	 * TODO: a minimal tuple never comes from a buffer, and hence it should be
+	 * fine to free the memory unconditionally. That means we don't need
+	 * SHOULDFREE flag on the minimal tuple.
+	 */
+	if (IS_TTS_SHOULDFREE(slot))
+	{
+		heap_free_minimal_tuple(mslot->mintuple);
+		RESET_TTS_SHOULDFREE(slot);
+	}
+
+	slot->tts_nvalid = 0;
+	SET_TTS_EMPTY(slot);
+	mslot->off = 0;
+	mslot->mintuple = NULL;
+}
+
+static void
+tts_minimal_getsomeattrs(TupleTableSlot *slot, int natts)
+{
+	MinimalTupleTableSlot *mslot = (MinimalTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+
+	slot_deform_tuple_ex(slot, mslot->tuple, &mslot->off, natts);
+}
+
+/*
+ * TODO:
+ * We don't expect a minimal tuple to be materialized into a heap tuple as
+ * such, but we do expect a minimal tuple to be saved into its own storage.
+ * That's being done by tts_minimal_localize() call below, which is used at
+ * various places. Earlier ExecMaterializeSlot() would not materialize the
+ * contents of slot into a minimal tuple. From that point of view we don't
+ * expect to materialize a minimal tuple, but then that time there weren't
+ * different slot types. Now that we are replacing ExecMaterializeSlot() by
+ * ExecGetHeapTupleFromSlot() or something like that, may be we could use
+ * "materialize" to mean creating a minimal tuple in slot's own context.
+ */
+static void
+tts_minimal_materialize(TupleTableSlot *slot)
+{
+	elog(ERROR, "materializing a minimal tuple");
+}
+
+/*
+ * Materialize the minimal tuple contained in the given slot into its own
+ * memory context.
+ */
+static void
+tts_minimal_localize(TupleTableSlot *slot)
+{
+	MinimalTupleTableSlot *mslot = (MinimalTupleTableSlot *) slot;
+	MemoryContext oldContext;
+
+	Assert(!IS_TTS_EMPTY(slot));
+
+	/* This slot has it's tuple already materialized. Nothing to do. */
+	if (IS_TTS_SHOULDFREE(slot))
+		return;
+
+	SET_TTS_SHOULDFREE(slot);
+	oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
+
+	if (!mslot->mintuple)
+		mslot->mintuple = heap_form_minimal_tuple(slot->tts_tupleDescriptor,
+												  slot->tts_values,
+												  slot->tts_isnull);
+	else
+	{
+		/*
+		 * The minimal tuple contained in this slot is not allocated in the
+		 * memory context of the given slot (else it would have TTS_SHOULDFREE
+		 * set).  Copy the minimal tuple into the given slot's memory context.
+		 */
+		mslot->mintuple = heap_copy_minimal_tuple(mslot->mintuple);
+	}
+	mslot->tuple = &mslot->minhdr;
+	mslot->minhdr.t_len = mslot->mintuple->t_len + MINIMAL_TUPLE_OFFSET;
+	mslot->minhdr.t_data = (HeapTupleHeader) ((char *) mslot->mintuple - MINIMAL_TUPLE_OFFSET);
+
+	MemoryContextSwitchTo(oldContext);
+
+	slot->tts_nvalid = 0;
+	mslot->off = 0;
+}
+
+/*
+ * Return the heap tuple equivalent to the minimal tuple contained in the slot,
+ * materializing the contents into a minimal tuple if necessary.
+ */
+static HeapTuple
+tts_minimal_get_heap_tuple(TupleTableSlot *slot)
+{
+	MinimalTupleTableSlot *mslot = (MinimalTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+	if (!mslot->mintuple)
+		tts_minimal_localize(slot);
+
+	/*
+	 * TODO
+	 * A minimal tuple is only allocated "len" number of bytes whereas a heap
+	 * tuple is allocated "len" + HEAPTUPLESIZE bytes. So, just returning the
+	 * address of minhdr doesn't look sufficient. We can replace such instances
+	 * by CopyHeapTuple request instead but have not verified the feasibility.
+	 * Also this means that we will create a new heap tuple every time this
+	 * function is called even when the slot contents do not change. Need to
+	 * see if that's possible.
+	 */
+	return heap_tuple_from_minimal_tuple(mslot->mintuple);
+}
+
+/*
+ * Return the minimal tuple if slot contains one. Otherwise materialize the
+ * contents of slot into a minimal tuple and return that.
+ */
+static MinimalTuple
+tts_minimal_get_minimal_tuple(TupleTableSlot *slot)
+{
+	MinimalTupleTableSlot *mslot = (MinimalTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+
+	/* See note at tts_minimal_localize. */
+	if (!mslot->mintuple)
+		tts_minimal_localize(slot);
+
+	return mslot->mintuple;
+}
+
+/*
+ * Return a heap tuple constructed from the minimal tuple contained in the slot.
+ *
+ * We always construct a new heap tuple, so there is nothing to copy as such.
+ *
+ * TODO:
+ * this function is exactly same as tts_minimal_get_heap_tuple, so may be
+ * callback can point to that function instead of writing exactly same
+ * implementation. But there's TODO in that function which can change things.
+ */
+static HeapTuple
+tts_minimal_copy_heap_tuple(TupleTableSlot *slot)
+{
+	MinimalTupleTableSlot *mslot = (MinimalTupleTableSlot *) slot;
+
+	/* Materialize the minimal tuple if not already present. */
+	if (!mslot->mintuple)
+		tts_minimal_localize(slot);
+
+	return heap_tuple_from_minimal_tuple(mslot->mintuple);
+}
+
+/*
+ * Return a copy of minimal tuple contained in the slot, materializing one if
+ * necessary.
+ */
+static MinimalTuple
+tts_minimal_copy_minimal_tuple(TupleTableSlot *slot)
+{
+	MinimalTupleTableSlot *mslot = (MinimalTupleTableSlot *) slot;
+
+	if (!mslot->mintuple)
+		tts_minimal_localize(slot);
+
+	return heap_copy_minimal_tuple(mslot->mintuple);
+}
+
+/*
+ * Store the given minimal tuple into the given MinimalTupleTableSlot. If the
+ * slot already contains a tuple, we will free the memory for the same before
+ * storing a new one there.
+ */
+static void
+tts_minimal_store_tuple(TupleTableSlot *slot, MinimalTuple mtup, bool shouldFree)
+{
+	MinimalTupleTableSlot *mslot = (MinimalTupleTableSlot *) slot;
+
+	tts_minimal_clear(slot);
+
+	RESET_TTS_EMPTY(slot);
+	slot->tts_nvalid = 0;
+	mslot->off = 0;
+
+	mslot->mintuple = mtup;
+	mslot->tuple = &mslot->minhdr;
+	mslot->minhdr.t_len = mtup->t_len + MINIMAL_TUPLE_OFFSET;
+	mslot->minhdr.t_data = (HeapTupleHeader) ((char *) mtup - MINIMAL_TUPLE_OFFSET);
+	/* no need to set t_self or t_tableOid since we won't allow access */
+
+	if (shouldFree)
+		SET_TTS_SHOULDFREE(slot);
+	else
+		Assert(!IS_TTS_SHOULDFREE(slot));
+}
+
+/*
+ * TupleTableSlotOps implementation for BufferHeapTupleTableSlot.
+ */
+
+static void
+tts_buffer_init(TupleTableSlot *slot)
+{
+}
+
+static void
+tts_buffer_release(TupleTableSlot *slot)
+{
+}
+
+static void
+tts_buffer_clear(TupleTableSlot *slot)
+{
+	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
+
+	/*
+	 * Free the memory for heap tuple if allowed. A tuple coming from buffer
+	 * can never be freed. But we may have materialized a tuple from buffer.
+	 * Such a tuple can be freed.
+	 */
+	if (IS_TTS_SHOULDFREE(slot))
+	{
+		/* We should have unpinned the buffer while materializing the tuple. */
+		Assert(!BufferIsValid(bslot->buffer));
+
+		heap_freetuple(bslot->base.tuple);
+		RESET_TTS_SHOULDFREE(slot);
+	}
+
+	if (BufferIsValid(bslot->buffer))
+		ReleaseBuffer(bslot->buffer);
+
+	slot->tts_nvalid = 0;
+	SET_TTS_EMPTY(slot);
+	bslot->base.tuple = NULL;
+	bslot->buffer = InvalidBuffer;
+}
+
+static void
+tts_buffer_getsomeattrs(TupleTableSlot *slot, int natts)
+{
+	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+
+	slot_deform_tuple_ex(slot, bslot->base.tuple, &bslot->base.off, natts);
+}
+
+/*
+ * Materialize the heap tuple contained in the given slot into its own memory
+ * context.
+ */
+static void
+tts_buffer_materialize(TupleTableSlot *slot)
+{
+	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
+	MemoryContext oldContext;
+
+	Assert(!IS_TTS_EMPTY(slot));
+
+	/* If already materialized nothing to do. */
+	if (IS_TTS_SHOULDFREE(slot))
+		return;
+
+	SET_TTS_SHOULDFREE(slot);
+	oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
+
+	if (!bslot->base.tuple)
+	{
+		/*
+		 * TODO: I would expect a BufferHeapTupleTableSlot to have a tuple
+		 * first which then gets deformed into values and isnull. But I do not
+		 * see a scenario when we would materialize a tuple from values and
+		 * isnull.
+		 */
+		bslot->base.tuple = heap_form_tuple(slot->tts_tupleDescriptor,
+											slot->tts_values,
+											slot->tts_isnull);
+	}
+	else
+		bslot->base.tuple = heap_copytuple(bslot->base.tuple);
+	MemoryContextSwitchTo(oldContext);
+
+	/*
+	 * TODO: I expect a BufferHeapTupleTableSlot to always have a buffer to be
+	 * associated with it OR the tuple is materialized. In the later case we
+	 * won't come here. So, we should always see a valid buffer here to be
+	 * unpinned.
+	 */
+	if (BufferIsValid(bslot->buffer))
+	{
+		ReleaseBuffer(bslot->buffer);
+		bslot->buffer = InvalidBuffer;
+	}
+
+	bslot->base.off = 0;
+	slot->tts_nvalid = 0;
+}
+
+/*
+ * Return the heap tuple in the slot as is if it contains one. Otherwise,
+ * materialize a heap tuple using contents of the slot and return it.
+ */
+static HeapTuple
+tts_buffer_get_heap_tuple(TupleTableSlot *slot)
+{
+	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+
+	/* Is this even possible for a buffer tuple? */
+	if (!bslot->base.tuple)
+		tts_buffer_materialize(slot);
+
+	return bslot->base.tuple;
+}
+
+/*
+ * Return a minimal tuple constructed from the contents of the slot.
+ *
+ * TODO: This function will always construct a new minimal tuple and return it.
+ * If called more than once on the given slot without changing the contents, we
+ * will leak memory. Need to figure out whether that's true.
+ *
+ * TODO: Also need to check whether just pointer swizzling work here.
+ */
+static MinimalTuple
+tts_buffer_get_minimal_tuple(TupleTableSlot *slot)
+{
+	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+
+	/* Is this even possible for a buffer tuple? */
+	if (!bslot->base.tuple)
+		tts_buffer_materialize(slot);
+
+	return minimal_tuple_from_heap_tuple(bslot->base.tuple);
+}
+
+/*
+ * Return a copy of heap tuple contained in the slot, materialising one if
+ * necessary.
+ */
+static HeapTuple
+tts_buffer_copy_heap_tuple(TupleTableSlot *slot)
+{
+	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+
+	/* Is this even possible for a buffer tuple? */
+	if (!bslot->base.tuple)
+		tts_buffer_materialize(slot);
+
+	return heap_copytuple(bslot->base.tuple);
+}
+
+/*
+ * Return a minimal tuple constructed from the contents of the slot.
+ *
+ * We always return a new minimal tuple so no copy, per say, is needed.
+ *
+ * TODO:
+ * This function is exact copy of tts_buffer_get_minimal_tuple() and thus the
+ * callback should point to that one instead of a new implementation. But
+ * there's one TODO there which might change tts_heap_get_minimal_tuple().
+ */
+static MinimalTuple
+tts_buffer_copy_minimal_tuple(TupleTableSlot *slot)
+{
+	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
+
+	Assert(!IS_TTS_EMPTY(slot));
+
+	/* Is this even possible for a buffer tuple? */
+	if (!bslot->base.tuple)
+		tts_buffer_materialize(slot);
+
+	return minimal_tuple_from_heap_tuple(bslot->base.tuple);
+}
+
+/*
+ * Store the given tuple into the given BufferHeapTupleTableSlot and pin the
+ * given buffer. If the tuple already contained in the slot can be freed free
+ * it.
+ */
+static void
+tts_buffer_store_tuple(TupleTableSlot *slot, HeapTuple tuple, Buffer buffer)
+{
+	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
+
+	if (IS_TTS_SHOULDFREE(slot))
+	{
+		/*
+		 * TODO: no buffer should be associated with the tuple in this case.
+		 * See tts_buffer_clear() for more.
+		 */
+		heap_freetuple(bslot->base.tuple);
+		RESET_TTS_SHOULDFREE(slot);
+	}
+
+	RESET_TTS_EMPTY(slot);
+	slot->tts_nvalid = 0;
+	bslot->base.tuple = tuple;
+	bslot->base.off = 0;
+
+	/*
+	 * If tuple is on a disk page, keep the page pinned as long as we hold a
+	 * pointer into it.  We assume the caller already has such a pin.
+	 *
+	 * This is coded to optimize the case where the slot previously held a
+	 * tuple on the same disk page: in that case releasing and re-acquiring
+	 * the pin is a waste of cycles.  This is a common situation during
+	 * seqscans, so it's worth troubling over.
+	 */
+	if (bslot->buffer != buffer)
+	{
+		if (BufferIsValid(bslot->buffer))
+			ReleaseBuffer(bslot->buffer);
+		bslot->buffer = buffer;
+		IncrBufferRefCount(buffer);
+	}
+}
+
+/*
+ * TupleTableSlotOps for each of TupleTableSlotTypes. These are used to
+ * identify the type of slot.
+ */
+const TupleTableSlotOps TTSOpsVirtual = {
+	tts_virtual_init,
+	tts_virtual_release,
+	tts_virtual_clear,
+	tts_virtual_getsomeattrs,
+	tts_virtual_materialize,
+	tts_virtual_get_heap_tuple,
+	tts_virtual_get_minimal_tuple,
+	tts_virtual_copy_heap_tuple,
+	tts_virtual_copy_minimal_tuple,
+};
+
+const TupleTableSlotOps TTSOpsHeapTuple = {
+	tts_heap_init,
+	tts_heap_release,
+	tts_heap_clear,
+	tts_heap_getsomeattrs,
+	tts_heap_materialize,
+	tts_heap_get_heap_tuple,
+	tts_heap_get_minimal_tuple,
+	tts_heap_copy_heap_tuple,
+	tts_heap_copy_minimal_tuple,
+};
+
+const TupleTableSlotOps TTSOpsMinimalTuple = {
+	tts_minimal_init,
+	tts_minimal_release,
+	tts_minimal_clear,
+	tts_minimal_getsomeattrs,
+	tts_minimal_materialize,
+	tts_minimal_get_heap_tuple,
+	tts_minimal_get_minimal_tuple,
+	tts_minimal_copy_heap_tuple,
+	tts_minimal_copy_minimal_tuple,
+};
+
+const TupleTableSlotOps TTSOpsBufferTuple = {
+	tts_buffer_init,
+	tts_buffer_release,
+	tts_buffer_clear,
+	tts_buffer_getsomeattrs,
+	tts_buffer_materialize,
+	tts_buffer_get_heap_tuple,
+	tts_buffer_get_minimal_tuple,
+	tts_buffer_copy_heap_tuple,
+	tts_buffer_copy_minimal_tuple,
+};
 
 /* ----------------------------------------------------------------
  *				  tuple table create/delete functions
@@ -104,58 +976,95 @@ static TupleDesc ExecTypeFromTLInternal(List *targetList,
 /* --------------------------------
  *		MakeTupleTableSlot
  *
- *		Basic routine to make an empty TupleTableSlot. If tupleDesc is
- *		specified the slot's descriptor is fixed for it's lifetime, gaining
- *		some efficiency. If that's undesirable, pass NULL.
+ *		Basic routine to make an empty TupleTableSlot of given
+ *		TupleTableSlotType. If tupleDesc is specified the slot's descriptor is
+ *		fixed for it's lifetime, gaining some efficiency. If that's
+ *		undesirable, pass NULL.
+ *
+ *		TODO: This work allows a TupleTableSlot to hold a tuple of format other
+ *		than heap or minimal heap tuple format. Such tuple formats are required
+ *		for pluggable storage. In that context having TupleTableSlotType as an
+ *		enum doesn't work since an extension or pluggable code can not add new
+ *		members to an enum. TupleTableSlotType argument to this function is
+ *		used to set appropriate set of callbacks (TupleTableSlotOps) and decide
+ *		the minimum size of TupleTableSlot being created. So instead of passing
+ *		TupleTableSlotType, we could instead pass the set of callbacks and the
+ *		minimum size of TupleTableSlot to this function. There could be
+ *		callback which returns the minimum size as well.
  * --------------------------------
  */
 TupleTableSlot *
-MakeTupleTableSlot(TupleDesc tupleDesc)
+MakeTupleTableSlot(TupleDesc tupleDesc, TupleTableSlotType st)
 {
-	Size		sz;
+	Size		basesz, allocsz;
 	TupleTableSlot *slot;
+	const TupleTableSlotOps *ops;
+
+	switch (st)
+	{
+		case TTS_TYPE_VIRTUAL:
+			ops = &TTSOpsVirtual;
+			basesz = sizeof(TupleTableSlot);
+			break;
+		case TTS_TYPE_HEAPTUPLE:
+			ops = &TTSOpsHeapTuple;
+			basesz = sizeof(HeapTupleTableSlot);
+			break;
+		case TTS_TYPE_MINIMALTUPLE:
+			ops = &TTSOpsMinimalTuple;
+			basesz = sizeof(MinimalTupleTableSlot);
+			break;
+		case TTS_TYPE_BUFFER:
+			ops = &TTSOpsBufferTuple;
+			basesz = sizeof(BufferHeapTupleTableSlot);
+			break;
+	}
+
+	/*
+	 * XXX: Main body of this should be in separate initialization
+	 * function so external types of slots can reuse.
+	 */
 
 	/*
 	 * When a fixed descriptor is specified, we can reduce overhead by
 	 * allocating the entire slot in one go.
 	 */
 	if (tupleDesc)
-		sz = MAXALIGN(sizeof(TupleTableSlot)) +
+		allocsz = MAXALIGN(basesz) +
 			MAXALIGN(tupleDesc->natts * sizeof(Datum)) +
 			MAXALIGN(tupleDesc->natts * sizeof(bool));
 	else
-		sz = sizeof(TupleTableSlot);
+		allocsz = basesz;
 
-	slot = palloc0(sz);
+	slot = palloc0(allocsz);
+	*((const TupleTableSlotOps **) &slot->tts_cb) = ops;
 	slot->type = T_TupleTableSlot;
 	SET_TTS_EMPTY(slot);
-	RESET_TTS_SHOULDFREE(slot);
-	RESET_TTS_SHOULDFREEMIN(slot);
 	if (tupleDesc != NULL)
 		SET_TTS_FIXED(slot);
 	else
 		RESET_TTS_FIXED(slot);
-	slot->tts_tuple = NULL;
 	slot->tts_tupleDescriptor = tupleDesc;
 	slot->tts_mcxt = CurrentMemoryContext;
-	slot->tts_buffer = InvalidBuffer;
 	slot->tts_nvalid = 0;
-	slot->tts_values = NULL;
-	slot->tts_isnull = NULL;
-	slot->tts_mintuple = NULL;
 
 	if (tupleDesc != NULL)
 	{
 		slot->tts_values = (Datum *)
 			(((char *) slot)
-			 + MAXALIGN(sizeof(TupleTableSlot)));
+			 + MAXALIGN(basesz));
 		slot->tts_isnull = (bool *)
 			(((char *) slot)
-			 + MAXALIGN(sizeof(TupleTableSlot))
+			 + MAXALIGN(basesz)
 			 + MAXALIGN(tupleDesc->natts * sizeof(Datum)));
 
 		PinTupleDesc(tupleDesc);
 	}
+
+	/*
+	 * And allow slot type specific initialization.
+	 */
+	slot->tts_cb->init(slot);
 
 	return slot;
 }
@@ -167,9 +1076,9 @@ MakeTupleTableSlot(TupleDesc tupleDesc)
  * --------------------------------
  */
 TupleTableSlot *
-ExecAllocTableSlot(List **tupleTable, TupleDesc desc)
+ExecAllocTableSlot(List **tupleTable, TupleDesc desc, TupleTableSlotType st)
 {
-	TupleTableSlot *slot = MakeTupleTableSlot(desc);
+	TupleTableSlot *slot = MakeTupleTableSlot(desc, st);
 
 	*tupleTable = lappend(*tupleTable, slot);
 
@@ -225,16 +1134,16 @@ ExecResetTupleTable(List *tupleTable,	/* tuple table */
 /* --------------------------------
  *		MakeSingleTupleTableSlot
  *
- *		This is a convenience routine for operations that need a
- *		standalone TupleTableSlot not gotten from the main executor
- *		tuple table.  It makes a single slot and initializes it
- *		to use the given tuple descriptor.
+ *		This is a convenience routine for operations that need a standalone
+ *		TupleTableSlot not gotten from the main executor tuple table.  It makes
+ *		a single slot of given TupleTableSlotType and initializes it to use the
+ *		given tuple descriptor.
  * --------------------------------
  */
 TupleTableSlot *
-MakeSingleTupleTableSlot(TupleDesc tupdesc)
+MakeSingleTupleTableSlot(TupleDesc tupdesc, TupleTableSlotType st)
 {
-	TupleTableSlot *slot = MakeTupleTableSlot(tupdesc);
+	TupleTableSlot *slot = MakeTupleTableSlot(tupdesc, st);
 
 	return slot;
 }
@@ -249,6 +1158,12 @@ MakeSingleTupleTableSlot(TupleDesc tupdesc)
 void
 ExecDropSingleTupleTableSlot(TupleTableSlot *slot)
 {
+	/*
+	 * TODO: do we need this? Why is not this called from
+	 * ExecResetTupleTable().
+	 */
+	slot->tts_cb->release(slot);
+
 	/* This should match ExecResetTupleTable's processing of one slot */
 	Assert(IsA(slot, TupleTableSlot));
 	ExecClearTuple(slot);
@@ -337,14 +1252,14 @@ ExecSetSlotDescriptor(TupleTableSlot *slot, /* slot to change */
  * It must always be 'false' for tuples that are stored in disk pages,
  * since we don't want to try to pfree those.
  *
- * Another case where it is 'false' is when the referenced tuple is held
- * in a tuple table slot belonging to a lower-level executor Proc node.
- * In this case the lower-level slot retains ownership and responsibility
- * for eventually releasing the tuple.  When this method is used, we must
- * be certain that the upper-level Proc node will lose interest in the tuple
+ * Another case where it is 'false' is when the referenced tuple is held in a
+ * tuple table slot belonging to a lower-level executor Proc node.  In this
+ * case the lower-level slot retains ownership and responsibility for
+ * eventually releasing the tuple.  When this method is used, we must be
+ * certain that the upper-level Proc node will lose interest in the tuple
  * sooner than the lower-level one does!  If you're not certain, copy the
- * lower-level tuple with heap_copytuple and let the upper-level table
- * slot assume ownership of the copy!
+ * lower-level tuple with heap_copytuple or with ExecCopySlotTuple() and let
+ * the upper-level table slot assume ownership of the copy!
  *
  * Return value is just the passed-in slot pointer.
  *
@@ -354,6 +1269,18 @@ ExecSetSlotDescriptor(TupleTableSlot *slot, /* slot to change */
  * This saved a couple lines of code in a few places, but seemed more likely
  * to mask logic errors than to be really useful, so it's now disallowed.
  * --------------------------------
+ *
+ *  TODO: In the light of introducing new pluggable storage formats, should we
+ *  rename this function as ExecStoreHeapTuple(), like ExecStoreMinimalTuple,
+ *  to be more clear as to what kind if tuple is being stored. This applies to
+ *  other function like ExecFetchSlotTuple, ExecFetchSlotTupleDatum,
+ *
+ *  TODO: Should we split the function into 1. ExecStoreBufferHeapTuple() to
+ *  store an on disk heap tuple which will take Buffer as an argument but not
+ *  shouldFree and 2. ExecStoreHeapTuple() to store an in-memory heap tuple
+ *  which will not have Buffer as an argument and ShouldFree will be an
+ *  argument. The callers of this function fall into one or the other category.
+ *  There is no caller which falls in both the categories.
  */
 TupleTableSlot *
 ExecStoreTuple(HeapTuple tuple,
@@ -370,46 +1297,23 @@ ExecStoreTuple(HeapTuple tuple,
 	/* passing shouldFree=true for a tuple on a disk page is not sane */
 	Assert(BufferIsValid(buffer) ? (!shouldFree) : true);
 
-	/*
-	 * Free any old physical tuple belonging to the slot.
-	 */
-	if (IS_TTS_SHOULDFREE(slot))
-		heap_freetuple(slot->tts_tuple);
-	if (IS_TTS_SHOULDFREEMIN(slot))
-		heap_free_minimal_tuple(slot->tts_mintuple);
-
-	/*
-	 * Store the new tuple into the specified slot.
-	 */
-	RESET_TTS_EMPTY(slot);
-	shouldFree ? SET_TTS_SHOULDFREE(slot) : RESET_TTS_SHOULDFREE(slot);
-	RESET_TTS_SHOULDFREEMIN(slot);
-	slot->tts_tuple = tuple;
-	slot->tts_mintuple = NULL;
-
-	/* Mark extracted state invalid */
-	slot->tts_nvalid = 0;
-
-	/*
-	 * If tuple is on a disk page, keep the page pinned as long as we hold a
-	 * pointer into it.  We assume the caller already has such a pin.
-	 *
-	 * This is coded to optimize the case where the slot previously held a
-	 * tuple on the same disk page: in that case releasing and re-acquiring
-	 * the pin is a waste of cycles.  This is a common situation during
-	 * seqscans, so it's worth troubling over.
-	 */
-	if (slot->tts_buffer != buffer)
+	if (BufferIsValid(buffer))
 	{
-		if (BufferIsValid(slot->tts_buffer))
-			ReleaseBuffer(slot->tts_buffer);
-		slot->tts_buffer = buffer;
-		if (BufferIsValid(buffer))
-			IncrBufferRefCount(buffer);
+		if (!TTS_IS_BUFFERTUPLE(slot))
+			elog(ERROR, "trying to store an on-disk heap tuple into wrong type of slot");
+		tts_buffer_store_tuple(slot, tuple, buffer);
+	}
+	else
+	{
+		if (!TTS_IS_HEAPTUPLE(slot))
+			elog(ERROR, "trying to store a heap tuple into wrong type of slot");
+		tts_heap_store_tuple(slot, tuple, shouldFree);
+
 	}
 
 	return slot;
 }
+
 
 /* --------------------------------
  *		ExecStoreMinimalTuple
@@ -431,83 +1335,9 @@ ExecStoreMinimalTuple(MinimalTuple mtup,
 	Assert(slot != NULL);
 	Assert(slot->tts_tupleDescriptor != NULL);
 
-	/*
-	 * Free any old physical tuple belonging to the slot.
-	 */
-	if (IS_TTS_SHOULDFREE(slot))
-		heap_freetuple(slot->tts_tuple);
-	if (IS_TTS_SHOULDFREEMIN(slot))
-		heap_free_minimal_tuple(slot->tts_mintuple);
-
-	/*
-	 * Drop the pin on the referenced buffer, if there is one.
-	 */
-	if (BufferIsValid(slot->tts_buffer))
-		ReleaseBuffer(slot->tts_buffer);
-
-	slot->tts_buffer = InvalidBuffer;
-
-	/*
-	 * Store the new tuple into the specified slot.
-	 */
-	RESET_TTS_EMPTY(slot);
-	RESET_TTS_SHOULDFREE(slot);
-	shouldFree ? SET_TTS_SHOULDFREEMIN(slot) : RESET_TTS_SHOULDFREEMIN(slot);
-	slot->tts_tuple = &slot->tts_minhdr;
-	slot->tts_mintuple = mtup;
-
-	slot->tts_minhdr.t_len = mtup->t_len + MINIMAL_TUPLE_OFFSET;
-	slot->tts_minhdr.t_data = (HeapTupleHeader) ((char *) mtup - MINIMAL_TUPLE_OFFSET);
-	/* no need to set t_self or t_tableOid since we won't allow access */
-
-	/* Mark extracted state invalid */
-	slot->tts_nvalid = 0;
-
-	return slot;
-}
-
-/* --------------------------------
- *		ExecClearTuple
- *
- *		This function is used to clear out a slot in the tuple table.
- *
- *		NB: only the tuple is cleared, not the tuple descriptor (if any).
- * --------------------------------
- */
-TupleTableSlot *				/* return: slot passed */
-ExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
-{
-	/*
-	 * sanity checks
-	 */
-	Assert(slot != NULL);
-
-	/*
-	 * Free the old physical tuple if necessary.
-	 */
-	if (IS_TTS_SHOULDFREE(slot))
-		heap_freetuple(slot->tts_tuple);
-	if (IS_TTS_SHOULDFREEMIN(slot))
-		heap_free_minimal_tuple(slot->tts_mintuple);
-
-	slot->tts_tuple = NULL;
-	slot->tts_mintuple = NULL;
-	RESET_TTS_SHOULDFREE(slot);
-	RESET_TTS_SHOULDFREEMIN(slot);
-
-	/*
-	 * Drop the pin on the referenced buffer, if there is one.
-	 */
-	if (BufferIsValid(slot->tts_buffer))
-		ReleaseBuffer(slot->tts_buffer);
-
-	slot->tts_buffer = InvalidBuffer;
-
-	/*
-	 * Mark it empty.
-	 */
-	SET_TTS_EMPTY(slot);
-	slot->tts_nvalid = 0;
+	if (!TTS_IS_MINIMALTUPLE(slot))
+		elog(ERROR, "trying to store a minimal tuple into wrong type of slot");
+	tts_minimal_store_tuple(slot, mtup, shouldFree);
 
 	return slot;
 }
@@ -521,6 +1351,11 @@ ExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
  *		* Store data into the Datum/isnull arrays.
  *		* Call ExecStoreVirtualTuple to mark the slot valid.
  * This is a bit unclean but it avoids one round of data copying.
+ *
+ * TODO: Now that we have VirtualTupleTableSlot as a separate slot type, name
+ * of this function is misleading. We could follow the protocol above with
+ * every TupleTableSlot type. So the name of the function should be something
+ * like ExecFinishLoadSlot() or something like that.
  * --------------------------------
  */
 TupleTableSlot *
@@ -571,93 +1406,22 @@ ExecStoreAllNullTuple(TupleTableSlot *slot)
 }
 
 /* --------------------------------
- *		ExecCopySlotTuple
- *			Obtain a copy of a slot's regular physical tuple.  The copy is
- *			palloc'd in the current memory context.
- *			The slot itself is undisturbed.
- *
- *		This works even if the slot contains a virtual or minimal tuple;
- *		however the "system columns" of the result will not be meaningful.
- * --------------------------------
- */
-HeapTuple
-ExecCopySlotTuple(TupleTableSlot *slot)
-{
-	/*
-	 * sanity checks
-	 */
-	Assert(slot != NULL);
-	Assert(!IS_TTS_EMPTY(slot));
-
-	/*
-	 * If we have a physical tuple (either format) then just copy it.
-	 */
-	if (TTS_HAS_PHYSICAL_TUPLE(slot))
-		return heap_copytuple(slot->tts_tuple);
-	if (slot->tts_mintuple)
-		return heap_tuple_from_minimal_tuple(slot->tts_mintuple);
-
-	/*
-	 * Otherwise we need to build a tuple from the Datum array.
-	 */
-	return heap_form_tuple(slot->tts_tupleDescriptor,
-						   slot->tts_values,
-						   slot->tts_isnull);
-}
-
-/* --------------------------------
- *		ExecCopySlotMinimalTuple
- *			Obtain a copy of a slot's minimal physical tuple.  The copy is
- *			palloc'd in the current memory context.
- *			The slot itself is undisturbed.
- * --------------------------------
- */
-MinimalTuple
-ExecCopySlotMinimalTuple(TupleTableSlot *slot)
-{
-	/*
-	 * sanity checks
-	 */
-	Assert(slot != NULL);
-	Assert(!IS_TTS_EMPTY(slot));
-
-	/*
-	 * If we have a physical tuple then just copy it.  Prefer to copy
-	 * tts_mintuple since that's a tad cheaper.
-	 */
-	if (slot->tts_mintuple)
-		return heap_copy_minimal_tuple(slot->tts_mintuple);
-	if (slot->tts_tuple)
-	{
-		if (HeapTupleHeaderGetNatts(slot->tts_tuple->t_data)
-			< slot->tts_tupleDescriptor->natts)
-			return minimal_expand_tuple(slot->tts_tuple,
-										slot->tts_tupleDescriptor);
-		else
-			return minimal_tuple_from_heap_tuple(slot->tts_tuple);
-	}
-
-	/*
-	 * Otherwise we need to build a tuple from the Datum array.
-	 */
-	return heap_form_minimal_tuple(slot->tts_tupleDescriptor,
-								   slot->tts_values,
-								   slot->tts_isnull);
-}
-
-/* --------------------------------
  *		ExecFetchSlotTuple
  *			Fetch the slot's regular physical tuple.
  *
- *		If the slot contains a virtual tuple, we convert it to physical
- *		form.  The slot retains ownership of the physical tuple.
- *		If it contains a minimal tuple we convert to regular form and store
- *		that in addition to the minimal tuple (not instead of, because
- *		callers may hold pointers to Datums within the minimal tuple).
+ *		This is a thin wrapper around TupleTableSlotType specific
+ *		get_heap_tuple callback. The callback is expected to return a heap
+ *		tuple as is if it holds one and continue to have ownership of the heap
+ *		tuple. Or it is expected to convert the internal representation into a
+ *		heap tuple, if required, and return it. In this case it may or may not
+ *		retain the heap tuple ownership.
  *
  * The main difference between this and ExecMaterializeSlot() is that this
  * does not guarantee that the contained tuple is local storage.
  * Hence, the result must be treated as read-only.
+ *
+ * TODO: should we move these thin wrappers to tuptable.h and make those
+ * inline.
  * --------------------------------
  */
 HeapTuple
@@ -669,40 +1433,19 @@ ExecFetchSlotTuple(TupleTableSlot *slot)
 	Assert(slot != NULL);
 	Assert(!IS_TTS_EMPTY(slot));
 
-	/*
-	 * If we have a regular physical tuple then just return it.
-	 */
-	if (TTS_HAS_PHYSICAL_TUPLE(slot))
-	{
-		if (HeapTupleHeaderGetNatts(slot->tts_tuple->t_data) <
-			slot->tts_tupleDescriptor->natts)
-		{
-			HeapTuple	tuple;
-			MemoryContext oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
-
-			tuple = heap_expand_tuple(slot->tts_tuple,
-									  slot->tts_tupleDescriptor);
-			MemoryContextSwitchTo(oldContext);
-			slot = ExecStoreTuple(tuple, slot, InvalidBuffer, true);
-		}
-		return slot->tts_tuple;
-	}
-
-	/*
-	 * Otherwise materialize the slot...
-	 */
-	return ExecMaterializeSlot(slot);
+	return slot->tts_cb->get_heap_tuple(slot);
 }
 
 /* --------------------------------
  *		ExecFetchSlotMinimalTuple
  *			Fetch the slot's minimal physical tuple.
  *
- *		If the slot contains a virtual tuple, we convert it to minimal
- *		physical form.  The slot retains ownership of the minimal tuple.
- *		If it contains a regular tuple we convert to minimal form and store
- *		that in addition to the regular tuple (not instead of, because
- *		callers may hold pointers to Datums within the regular tuple).
+ *		This is a thin wrapper around TupleTableSlotType specific
+ *		get_heap_tuple callback. The callback is expected to return a heap
+ *		tuple as is if it holds one and continue to have ownership of the heap
+ *		tuple. Or it is expected to convert the internal representation into a
+ *		heap tuple, if required, and return it. In this case it may or may not
+ *		retain the heap tuple ownership.
  *
  * As above, the result must be treated as read-only.
  * --------------------------------
@@ -710,41 +1453,13 @@ ExecFetchSlotTuple(TupleTableSlot *slot)
 MinimalTuple
 ExecFetchSlotMinimalTuple(TupleTableSlot *slot)
 {
-	MemoryContext oldContext;
-
 	/*
 	 * sanity checks
 	 */
 	Assert(slot != NULL);
 	Assert(!IS_TTS_EMPTY(slot));
 
-
-	/*
-	 * If we have a minimal physical tuple (local or not) then just return it.
-	 */
-	if (slot->tts_mintuple)
-		return slot->tts_mintuple;
-
-	/*
-	 * Otherwise, copy or build a minimal tuple, and store it into the slot.
-	 *
-	 * We may be called in a context that is shorter-lived than the tuple
-	 * slot, but we have to ensure that the materialized tuple will survive
-	 * anyway.
-	 */
-	oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
-	slot->tts_mintuple = ExecCopySlotMinimalTuple(slot);
-	SET_TTS_SHOULDFREEMIN(slot);
-	MemoryContextSwitchTo(oldContext);
-
-	/*
-	 * Note: we may now have a situation where we have a local minimal tuple
-	 * attached to a virtual or non-local physical tuple.  There seems no harm
-	 * in that at the moment, but if any materializes, we should change this
-	 * function to force the slot into minimal-tuple-only state.
-	 */
-
-	return slot->tts_mintuple;
+	return slot->tts_cb->get_minimal_tuple(slot);
 }
 
 /* --------------------------------
@@ -769,79 +1484,6 @@ ExecFetchSlotTupleDatum(TupleTableSlot *slot)
 }
 
 /* --------------------------------
- *		ExecMaterializeSlot
- *			Force a slot into the "materialized" state.
- *
- *		This causes the slot's tuple to be a local copy not dependent on
- *		any external storage.  A pointer to the contained tuple is returned.
- *
- *		A typical use for this operation is to prepare a computed tuple
- *		for being stored on disk.  The original data may or may not be
- *		virtual, but in any case we need a private copy for heap_insert
- *		to scribble on.
- * --------------------------------
- */
-HeapTuple
-ExecMaterializeSlot(TupleTableSlot *slot)
-{
-	MemoryContext oldContext;
-
-	/*
-	 * sanity checks
-	 */
-	Assert(slot != NULL);
-	Assert(!IS_TTS_EMPTY(slot));
-
-	/*
-	 * If we have a regular physical tuple, and it's locally palloc'd, we have
-	 * nothing to do.
-	 */
-	if (slot->tts_tuple && IS_TTS_SHOULDFREE(slot))
-		return slot->tts_tuple;
-
-	/*
-	 * Otherwise, copy or build a physical tuple, and store it into the slot.
-	 *
-	 * We may be called in a context that is shorter-lived than the tuple
-	 * slot, but we have to ensure that the materialized tuple will survive
-	 * anyway.
-	 */
-	oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
-	slot->tts_tuple = ExecCopySlotTuple(slot);
-	SET_TTS_SHOULDFREE(slot);
-	MemoryContextSwitchTo(oldContext);
-
-	/*
-	 * Drop the pin on the referenced buffer, if there is one.
-	 */
-	if (BufferIsValid(slot->tts_buffer))
-		ReleaseBuffer(slot->tts_buffer);
-
-	slot->tts_buffer = InvalidBuffer;
-
-	/*
-	 * Mark extracted state invalid.  This is important because the slot is
-	 * not supposed to depend any more on the previous external data; we
-	 * mustn't leave any dangling pass-by-reference datums in tts_values.
-	 * However, we have not actually invalidated any such datums, if there
-	 * happen to be any previously fetched from the slot.  (Note in particular
-	 * that we have not pfree'd tts_mintuple, if there is one.)
-	 */
-	slot->tts_nvalid = 0;
-
-	/*
-	 * On the same principle of not depending on previous remote storage,
-	 * forget the mintuple if it's not local storage.  (If it is local
-	 * storage, we must not pfree it now, since callers might have already
-	 * fetched datum pointers referencing it.)
-	 */
-	if (!IS_TTS_SHOULDFREEMIN(slot))
-		slot->tts_mintuple = NULL;
-
-	return slot->tts_tuple;
-}
-
-/* --------------------------------
  *		ExecCopySlot
  *			Copy the source slot's contents into the destination slot.
  *
@@ -854,19 +1496,73 @@ ExecMaterializeSlot(TupleTableSlot *slot)
 TupleTableSlot *
 ExecCopySlot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 {
-	HeapTuple	newTuple;
-	MemoryContext oldContext;
+	MemoryContext oldcontext;
+
+	ExecClearTuple(dstslot);
 
 	/*
-	 * There might be ways to optimize this when the source is virtual, but
-	 * for now just always build a physical copy.  Make sure it is in the
-	 * right context.
+	 * TODO: We could eliminate the if .. else if .. conditions below, by
+	 * having a callback copyslot() called on the dstslot. The callback would
+	 * decide how to fetch the data from the srcslot so that it can be saved
+	 * into the destination slot's representation.
 	 */
-	oldContext = MemoryContextSwitchTo(dstslot->tts_mcxt);
-	newTuple = ExecCopySlotTuple(srcslot);
-	MemoryContextSwitchTo(oldContext);
+	if (TTS_IS_VIRTUAL(dstslot))
+	{
+		FormData_pg_attribute *attrs = srcslot->tts_tupleDescriptor->attrs;
+		int			cnt;
+		int			natts = dstslot->tts_tupleDescriptor->natts;
 
-	return ExecStoreTuple(newTuple, dstslot, InvalidBuffer, true);
+		/*
+		 * Copy the datums from the source slot to the destination slot. If the
+		 * destination slot is not a virtual tuple table slot, first deform the
+		 * tuple inside it.
+		 */
+		if (!TTS_IS_VIRTUAL(srcslot));
+		{
+			slot_getallattrs(srcslot);
+
+			/*
+			 * Number of attributes in the source tuple should match those in
+			 * the destination tuple descriptor.
+			 */
+			Assert(srcslot->tts_nvalid == natts);
+		}
+
+		oldcontext = MemoryContextSwitchTo(dstslot->tts_mcxt);
+		memcpy(dstslot->tts_isnull, srcslot->tts_isnull, sizeof(bool) * natts);
+		for (cnt = 0; cnt < natts; cnt++)
+		{
+			if (!dstslot->tts_isnull[cnt])
+				dstslot->tts_values[cnt] = datumCopy(srcslot->tts_values[cnt],
+													 attrs[cnt].attbyval,
+													 attrs[cnt].attlen);
+		}
+		MemoryContextSwitchTo(oldcontext);
+
+		ExecStoreVirtualTuple(dstslot);
+	}
+	else if (TTS_IS_HEAPTUPLE(dstslot) || TTS_IS_BUFFERTUPLE(dstslot))
+	{
+		HeapTuple tuple;
+
+		oldcontext = MemoryContextSwitchTo(dstslot->tts_mcxt);
+		tuple = ExecCopySlotTuple(srcslot);
+		MemoryContextSwitchTo(oldcontext);
+
+		ExecStoreTuple(tuple, dstslot, InvalidBuffer, true);
+	}
+	else if (TTS_IS_MINIMALTUPLE(dstslot))
+	{
+		MinimalTuple mintuple;
+
+		oldcontext = MemoryContextSwitchTo(dstslot->tts_mcxt);
+		mintuple = ExecCopySlotMinimalTuple(srcslot);
+		MemoryContextSwitchTo(oldcontext);
+
+		ExecStoreMinimalTuple(mintuple, dstslot, true);
+	}
+
+	return dstslot;
 }
 
 
@@ -891,7 +1587,8 @@ ExecCopySlot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
  * ----------------
  */
 void
-ExecInitResultTupleSlotTL(EState *estate, PlanState *planstate)
+ExecInitResultTupleSlotTL(EState *estate, PlanState *planstate,
+						  TupleTableSlotType st)
 {
 	bool		hasoid;
 	TupleDesc	tupDesc;
@@ -908,7 +1605,8 @@ ExecInitResultTupleSlotTL(EState *estate, PlanState *planstate)
 
 	tupDesc = ExecTypeFromTL(planstate->plan->targetlist, hasoid);
 
-	planstate->ps_ResultTupleSlot = ExecAllocTableSlot(&estate->es_tupleTable, tupDesc);
+	planstate->ps_ResultTupleSlot =
+		ExecAllocTableSlot(&estate->es_tupleTable, tupDesc, st);
 }
 
 /* ----------------
@@ -916,10 +1614,11 @@ ExecInitResultTupleSlotTL(EState *estate, PlanState *planstate)
  * ----------------
  */
 void
-ExecInitScanTupleSlot(EState *estate, ScanState *scanstate, TupleDesc tupledesc)
+ExecInitScanTupleSlot(EState *estate, ScanState *scanstate,
+					  TupleDesc tupledesc, TupleTableSlotType st)
 {
 	scanstate->ss_ScanTupleSlot = ExecAllocTableSlot(&estate->es_tupleTable,
-													 tupledesc);
+													 tupledesc, st);
 	scanstate->ps.scandesc = tupledesc;
 }
 
@@ -932,9 +1631,9 @@ ExecInitScanTupleSlot(EState *estate, ScanState *scanstate, TupleDesc tupledesc)
  * ----------------
  */
 TupleTableSlot *
-ExecInitExtraTupleSlot(EState *estate, TupleDesc tupledesc)
+ExecInitExtraTupleSlot(EState *estate, TupleDesc tupledesc, TupleTableSlotType st)
 {
-	return ExecAllocTableSlot(&estate->es_tupleTable, tupledesc);
+	return ExecAllocTableSlot(&estate->es_tupleTable, tupledesc, st);
 }
 
 /* ----------------
@@ -946,9 +1645,9 @@ ExecInitExtraTupleSlot(EState *estate, TupleDesc tupledesc)
  * ----------------
  */
 TupleTableSlot *
-ExecInitNullTupleSlot(EState *estate, TupleDesc tupType)
+ExecInitNullTupleSlot(EState *estate, TupleDesc tupType, TupleTableSlotType st)
 {
-	TupleTableSlot *slot = ExecInitExtraTupleSlot(estate, tupType);
+	TupleTableSlot *slot = ExecInitExtraTupleSlot(estate, tupType, st);
 
 	return ExecStoreAllNullTuple(slot);
 }
@@ -1300,7 +1999,7 @@ begin_tup_output_tupdesc(DestReceiver *dest, TupleDesc tupdesc)
 
 	tstate = (TupOutputState *) palloc(sizeof(TupOutputState));
 
-	tstate->slot = MakeSingleTupleTableSlot(tupdesc);
+	tstate->slot = MakeSingleTupleTableSlot(tupdesc, TTS_TYPE_VIRTUAL);
 	tstate->dest = dest;
 
 	tstate->dest->rStartup(tstate->dest, (int) CMD_SELECT, tupdesc);

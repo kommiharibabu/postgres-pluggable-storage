@@ -1079,7 +1079,7 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 
 			j = ExecInitJunkFilter(planstate->plan->targetlist,
 								   tupType->tdhasoid,
-								   ExecInitExtraTupleSlot(estate, NULL));
+								   ExecInitExtraTupleSlot(estate, NULL, TTS_TYPE_VIRTUAL));
 			estate->es_junkFilter = j;
 
 			/* Want to return the cleaned tuple type */

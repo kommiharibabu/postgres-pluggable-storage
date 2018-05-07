@@ -239,7 +239,8 @@ ordered_set_startup(FunctionCallInfo fcinfo, bool use_tuples)
 			}
 
 			/* Create slot we'll use to store/retrieve rows */
-			qstate->tupslot = MakeSingleTupleTableSlot(qstate->tupdesc);
+			qstate->tupslot = MakeSingleTupleTableSlot(qstate->tupdesc,
+													   TTS_TYPE_MINIMALTUPLE);
 		}
 		else
 		{
@@ -1375,9 +1376,9 @@ hypothetical_dense_rank_final(PG_FUNCTION_ARGS)
 	 * previous row available for comparisons.  This is accomplished by
 	 * swapping the slot pointer variables after each row.
 	 */
-	extraslot = MakeSingleTupleTableSlot(osastate->qstate->tupdesc);
+	extraslot = MakeSingleTupleTableSlot(osastate->qstate->tupdesc,
+										 TTS_TYPE_MINIMALTUPLE);
 	slot2 = extraslot;
-
 	/* iterate till we find the hypothetical row */
 	while (tuplesort_gettupleslot(osastate->sortstate, true, true, slot,
 								  &abbrevVal))

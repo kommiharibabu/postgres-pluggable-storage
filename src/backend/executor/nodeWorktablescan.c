@@ -159,8 +159,8 @@ ExecInitWorkTableScan(WorkTableScan *node, EState *estate, int eflags)
 	/*
 	 * tuple table initialization
 	 */
-	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps);
-	ExecInitScanTupleSlot(estate, &scanstate->ss, NULL);
+	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps, TTS_TYPE_VIRTUAL);
+	ExecInitScanTupleSlot(estate, &scanstate->ss, NULL, TTS_TYPE_MINIMALTUPLE);
 
 	/*
 	 * initialize child expressions

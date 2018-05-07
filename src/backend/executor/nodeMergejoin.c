@@ -1512,13 +1512,14 @@ ExecInitMergeJoin(MergeJoin *node, EState *estate, int eflags)
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &mergestate->js.ps);
+	ExecInitResultTupleSlotTL(estate, &mergestate->js.ps, TTS_TYPE_VIRTUAL);
 	ExecAssignProjectionInfo(&mergestate->js.ps, NULL);
 
 	/*
 	 * tuple table initialization
 	 */
-	mergestate->mj_MarkedTupleSlot = ExecInitExtraTupleSlot(estate, innerDesc);
+	mergestate->mj_MarkedTupleSlot = ExecInitExtraTupleSlot(estate, innerDesc,
+															TTS_TYPE_VIRTUAL);
 
 	/*
 	 * initialize child expressions
@@ -1548,13 +1549,13 @@ ExecInitMergeJoin(MergeJoin *node, EState *estate, int eflags)
 			mergestate->mj_FillOuter = true;
 			mergestate->mj_FillInner = false;
 			mergestate->mj_NullInnerTupleSlot =
-				ExecInitNullTupleSlot(estate, innerDesc);
+				ExecInitNullTupleSlot(estate, innerDesc, TTS_TYPE_VIRTUAL);
 			break;
 		case JOIN_RIGHT:
 			mergestate->mj_FillOuter = false;
 			mergestate->mj_FillInner = true;
 			mergestate->mj_NullOuterTupleSlot =
-				ExecInitNullTupleSlot(estate, outerDesc);
+				ExecInitNullTupleSlot(estate, outerDesc, TTS_TYPE_VIRTUAL);
 
 			/*
 			 * Can't handle right or full join with non-constant extra
@@ -1570,9 +1571,9 @@ ExecInitMergeJoin(MergeJoin *node, EState *estate, int eflags)
 			mergestate->mj_FillOuter = true;
 			mergestate->mj_FillInner = true;
 			mergestate->mj_NullOuterTupleSlot =
-				ExecInitNullTupleSlot(estate, outerDesc);
+				ExecInitNullTupleSlot(estate, outerDesc, TTS_TYPE_VIRTUAL);
 			mergestate->mj_NullInnerTupleSlot =
-				ExecInitNullTupleSlot(estate, innerDesc);
+				ExecInitNullTupleSlot(estate, innerDesc, TTS_TYPE_VIRTUAL);
 
 			/*
 			 * Can't handle right or full join with non-constant extra

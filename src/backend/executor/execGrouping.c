@@ -202,7 +202,8 @@ BuildTupleHashTable(PlanState *parent,
 	 * We copy the input tuple descriptor just for safety --- we assume all
 	 * input tuples will have equivalent descriptors.
 	 */
-	hashtable->tableslot = MakeSingleTupleTableSlot(CreateTupleDescCopy(inputDesc));
+	hashtable->tableslot = MakeSingleTupleTableSlot(CreateTupleDescCopy(inputDesc),
+													TTS_TYPE_MINIMALTUPLE);
 
 	/* build comparator for all columns */
 	hashtable->tab_eq_func = ExecBuildGroupingEqual(inputDesc, inputDesc,

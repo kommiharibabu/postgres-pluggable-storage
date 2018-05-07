@@ -952,12 +952,13 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	 * get the scan type from the relation descriptor.
 	 */
 	ExecInitScanTupleSlot(estate, &indexstate->ss,
-						  RelationGetDescr(currentRelation));
+						  RelationGetDescr(currentRelation),
+						  TTS_TYPE_BUFFER); /* FIXME: wrong for reorder case */
 
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(estate, &indexstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &indexstate->ss.ps, TTS_TYPE_VIRTUAL);
 	ExecAssignScanProjectionInfo(&indexstate->ss);
 
 	/*

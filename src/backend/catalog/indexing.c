@@ -95,7 +95,8 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 	heapRelation = indstate->ri_RelationDesc;
 
 	/* Need a slot to hold the tuple being examined */
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation));
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation),
+									TTS_TYPE_HEAPTUPLE);
 	ExecStoreTuple(heapTuple, slot, InvalidBuffer, false);
 
 	/*

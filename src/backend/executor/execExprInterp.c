@@ -492,13 +492,17 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 		{
 			int			attnum = op->d.var.attnum;
 			Datum		d;
+			HeapTupleTableSlot *hslot = (HeapTupleTableSlot *)innerslot;
 
-			/* these asserts must match defenses in slot_getattr */
-			Assert(innerslot->tts_tuple != NULL);
-			Assert(innerslot->tts_tuple != &(innerslot->tts_minhdr));
+			/* Only a heap tuple has system attributes. */
+			Assert(TTS_IS_HEAPTUPLE(innerslot) ||
+				   TTS_IS_BUFFERTUPLE(innerslot));
+
+			/* The slot should have a valid heap tuple. */
+			Assert(hslot->tuple != NULL);
 
 			/* heap_getsysattr has sufficient defenses against bad attnums */
-			d = heap_getsysattr(innerslot->tts_tuple, attnum,
+			d = heap_getsysattr(hslot->tuple, attnum,
 								innerslot->tts_tupleDescriptor,
 								op->resnull);
 			*op->resvalue = d;
@@ -510,13 +514,17 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 		{
 			int			attnum = op->d.var.attnum;
 			Datum		d;
+			HeapTupleTableSlot *hslot = (HeapTupleTableSlot *)outerslot;
 
-			/* these asserts must match defenses in slot_getattr */
-			Assert(outerslot->tts_tuple != NULL);
-			Assert(outerslot->tts_tuple != &(outerslot->tts_minhdr));
+			/* Only a heap tuple has system attributes. */
+			Assert(TTS_IS_HEAPTUPLE(outerslot) ||
+				   TTS_IS_BUFFERTUPLE(outerslot));
+
+			/* The slot should have a valid heap tuple. */
+			Assert(hslot->tuple != NULL);
 
 			/* heap_getsysattr has sufficient defenses against bad attnums */
-			d = heap_getsysattr(outerslot->tts_tuple, attnum,
+			d = heap_getsysattr(hslot->tuple, attnum,
 								outerslot->tts_tupleDescriptor,
 								op->resnull);
 			*op->resvalue = d;
@@ -528,13 +536,13 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 		{
 			int			attnum = op->d.var.attnum;
 			Datum		d;
+			HeapTupleTableSlot *hslot = (HeapTupleTableSlot *)scanslot;
 
-			/* these asserts must match defenses in slot_getattr */
-			Assert(scanslot->tts_tuple != NULL);
-			Assert(scanslot->tts_tuple != &(scanslot->tts_minhdr));
+			/* The slot should have a valid heap tuple. */
+			Assert(hslot->tuple != NULL);
 
 			/* heap_getsysattr has sufficient defenses against bad attnums */
-			d = heap_getsysattr(scanslot->tts_tuple, attnum,
+			d = heap_getsysattr(hslot->tuple, attnum,
 								scanslot->tts_tupleDescriptor,
 								op->resnull);
 			*op->resvalue = d;

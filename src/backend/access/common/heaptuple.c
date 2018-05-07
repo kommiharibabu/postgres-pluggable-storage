@@ -1437,7 +1437,7 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 	{
 		/* Restore state from previous execution */
 		off = slot->tts_off;
-		slow = slot->tts_slow;
+		slow = IS_TTS_SLOW(slot);
 	}
 
 	tp = (char *) tup + tup->t_hoff;
@@ -1498,7 +1498,10 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 	 */
 	slot->tts_nvalid = attnum;
 	slot->tts_off = off;
-	slot->tts_slow = slow;
+	if (slow)
+		SET_TTS_SLOW(slot);
+	else
+		RESET_TTS_SLOW(slot);
 }
 
 /*

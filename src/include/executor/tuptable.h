@@ -236,9 +236,16 @@ extern TupleTableSlot *ExecCopySlot(TupleTableSlot *dstslot,
 			 TupleTableSlot *srcslot);
 
 /* virtual or base type */
+/*
+ * TODO: tts_type is added for convenience of debugging. Most of the code
+ * doesn't use it. Instead tts_cb is used to identify the type of tuple table
+ * slot.  We might want to create new NodeTag for the type of tuple, but then
+ * users won't be able to add new tuple table types dynamically.
+ */
 struct TupleTableSlot
 {
 	NodeTag		type;
+	TupleTableSlotType tts_type;	/* Type of TupleTableSlot. */
 	uint16		tts_flags;
 	AttrNumber	tts_nvalid;		/* # of valid values in tts_values */
 

@@ -1039,6 +1039,7 @@ MakeTupleTableSlot(TupleDesc tupleDesc, TupleTableSlotType st)
 	slot = palloc0(allocsz);
 	*((const TupleTableSlotOps **) &slot->tts_cb) = ops;
 	slot->type = T_TupleTableSlot;
+	slot->tts_type = st;
 	SET_TTS_EMPTY(slot);
 	if (tupleDesc != NULL)
 		SET_TTS_FIXED(slot);

@@ -163,12 +163,6 @@ ExecProcessReturning(ResultRelInfo *resultRelInfo,
 	ProjectionInfo *projectReturning = resultRelInfo->ri_projectReturning;
 	ExprContext *econtext = projectReturning->pi_exprContext;
 
-	/*
-	 * Reset per-tuple memory context to free any expression evaluation
-	 * storage allocated in the previous cycle.
-	 */
-	ResetExprContext(econtext);
-
 	/* Make tuple and any needed join variables available to ExecProject */
 	if (tupleSlot)
 		econtext->ecxt_scantuple = tupleSlot;
@@ -1454,13 +1448,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 			elog(ERROR, "unrecognized heap_lock_tuple status: %u", test);
 	}
 
-	/*
-	 * Success, the tuple is locked.
-	 *
-	 * Reset per-tuple memory context to free any expression evaluation
-	 * storage allocated in the previous cycle.
-	 */
-	ResetExprContext(econtext);
+	/* Success, the tuple is locked. */
 
 	/*
 	 * Verify that the tuple is visible to our MVCC snapshot if the current
@@ -2021,6 +2009,21 @@ ExecModifyTable(PlanState *pstate)
 		 * to rethink this later.
 		 */
 		ResetPerTupleExprContext(estate);
+
+		/*
+		 * Reset per-tuple memory context, used for processing on conflict and
+		 * returning clauses, to free any expression evaluation storage
+		 * allocated in the previous cycle.
+		 *
+		 * TODO: This context needs to be reset for every tuple returned by
+		 * RETURNING, thus reset for every output tuple similar to what we are
+		 * doing above. But it should be reset for every input tuple for ON
+		 * conflict processing. Given that the FOR loop above is run for every
+		 * input tuple, this looks like the right place for doing that.
+		 * Nevertheless check.
+		 */
+		if (pstate->ps_ExprContext)
+			ResetExprContext(pstate->ps_ExprContext);
 
 		planSlot = ExecProcNode(subplanstate);
 

@@ -324,11 +324,40 @@ ExecClearTuple(TupleTableSlot *slot)
 	return slot;
 }
 
+/*
+ * TODO: What used to be ExecMaterializeSlot() is split into two functions
+ * ExecGetHeapTupleFromSlot() and this. The first one returns a heap tuple
+ * representing the contents of the given slot. The second saves the contents
+ * of the slot into its own memory context. The name of this function should be
+ * changed, but I do not have any bright idea now.
+ *
+ * Eventually we want to replace all the calls to ExecMaterializeSlot() with
+ * one
+ * of the two functions. We will do this as and when needed. Once all the calls
+ * are replaced, we should remove this function too.
+ */
 static inline HeapTuple
 ExecMaterializeSlot(TupleTableSlot *slot)
 {
+	/*
+	 * TODO: Most of the get_heap_tuple() implementations materialize a tuple
+	 * if it's not available. So, a separate call for materialize looks
+	 * unnecessary.
+	 */
 	slot->tts_cb->materialize(slot);
 	return slot->tts_cb->get_heap_tuple(slot);
+}
+
+static inline HeapTuple
+ExecGetHeapTupleFromSlot(TupleTableSlot *slot)
+{
+	return slot->tts_cb->get_heap_tuple(slot);
+}
+
+static inline void
+ExecSaveSlot(TupleTableSlot *slot)
+{
+	slot->tts_cb->materialize(slot);
 }
 
 /*

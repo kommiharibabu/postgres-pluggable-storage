@@ -274,7 +274,7 @@ ExecInsert(ModifyTableState *mtstate,
 	 * get the heap tuple out of the tuple table slot, making sure we have a
 	 * writable copy
 	 */
-	tuple = ExecMaterializeSlot(slot);
+	tuple = ExecGetHeapTupleFromSlot(slot);
 
 	/*
 	 * get information on the (current) result relation
@@ -315,7 +315,7 @@ ExecInsert(ModifyTableState *mtstate,
 			return NULL;
 
 		/* trigger might have changed tuple */
-		tuple = ExecMaterializeSlot(slot);
+		tuple = ExecGetHeapTupleFromSlot(slot);
 	}
 
 	/* INSTEAD OF ROW INSERT Triggers */
@@ -328,7 +328,7 @@ ExecInsert(ModifyTableState *mtstate,
 			return NULL;
 
 		/* trigger might have changed tuple */
-		tuple = ExecMaterializeSlot(slot);
+		tuple = ExecGetHeapTupleFromSlot(slot);
 
 		newId = InvalidOid;
 	}
@@ -346,7 +346,7 @@ ExecInsert(ModifyTableState *mtstate,
 			return NULL;
 
 		/* FDW might have changed tuple */
-		tuple = ExecMaterializeSlot(slot);
+		tuple = ExecGetHeapTupleFromSlot(slot);
 
 		/*
 		 * AFTER ROW Triggers or RETURNING expressions might reference the
@@ -695,7 +695,7 @@ ExecDelete(ModifyTableState *mtstate,
 		 */
 		if (IS_TTS_EMPTY(slot))
 			ExecStoreAllNullTuple(slot);
-		tuple = ExecMaterializeSlot(slot);
+		tuple = ExecGetHeapTupleFromSlot(slot);
 		tuple->t_tableOid = RelationGetRelid(resultRelationDesc);
 	}
 	else
@@ -891,7 +891,7 @@ ldelete:;
 		 * Before releasing the target tuple again, make sure rslot has a
 		 * local copy of any pass-by-reference values.
 		 */
-		ExecMaterializeSlot(rslot);
+		ExecSaveSlot(rslot);
 
 		ExecClearTuple(slot);
 		if (BufferIsValid(delbuffer))
@@ -953,7 +953,7 @@ ExecUpdate(ModifyTableState *mtstate,
 	 * get the heap tuple out of the tuple table slot, making sure we have a
 	 * writable copy
 	 */
-	tuple = ExecMaterializeSlot(slot);
+	tuple = ExecGetHeapTupleFromSlot(slot);
 
 	/*
 	 * get information on the (current) result relation
@@ -972,7 +972,7 @@ ExecUpdate(ModifyTableState *mtstate,
 			return NULL;
 
 		/* trigger might have changed tuple */
-		tuple = ExecMaterializeSlot(slot);
+		tuple = ExecGetHeapTupleFromSlot(slot);
 	}
 
 	/* INSTEAD OF ROW UPDATE Triggers */
@@ -986,7 +986,7 @@ ExecUpdate(ModifyTableState *mtstate,
 			return NULL;
 
 		/* trigger might have changed tuple */
-		tuple = ExecMaterializeSlot(slot);
+		tuple = ExecGetHeapTupleFromSlot(slot);
 	}
 	else if (resultRelInfo->ri_FdwRoutine)
 	{
@@ -1002,7 +1002,7 @@ ExecUpdate(ModifyTableState *mtstate,
 			return NULL;
 
 		/* FDW might have changed tuple */
-		tuple = ExecMaterializeSlot(slot);
+		tuple = ExecGetHeapTupleFromSlot(slot);
 
 		/*
 		 * AFTER ROW Triggers or RETURNING expressions might reference the
@@ -2412,8 +2412,16 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		 */
 		mtstate->ps.plan->targetlist = (List *) linitial(node->returningLists);
 
-		/* Set up a slot for the output of the RETURNING projection(s) */
-		ExecInitResultTupleSlotTL(estate, &mtstate->ps, TTS_TYPE_VIRTUAL);
+		/* Set up a slot for the output of the RETURNING projection(s). */
+		/*
+		 * TODO: ExecDelete() requies the contents of the slot to be
+		 * saved/materialized. For now we are not allowing contents of the
+		 * virtual slot to be materialized. So use heap tuple table slot. In
+		 * case we change out mind, use virtual tuple table slot here.
+		 */
+		ExecInitResultTupleSlotTL(estate, &mtstate->ps,
+								  operation == CMD_DELETE ?
+								  TTS_TYPE_HEAPTUPLE : TTS_TYPE_VIRTUAL);
 		slot = mtstate->ps.ps_ResultTupleSlot;
 
 		/* Need an econtext too */
@@ -2662,7 +2670,8 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	/*
 	 * Set up a tuple table slot for use for trigger output tuples. In a plan
 	 * containing multiple ModifyTable nodes, all can share one such slot, so
-	 * we keep it in the estate.
+	 * we keep it in the estate. The tuple being inserted doesn't come from a
+	 * buffer.
 	 */
 	if (estate->es_trig_tuple_slot == NULL)
 		estate->es_trig_tuple_slot = ExecInitExtraTupleSlot(estate, NULL,

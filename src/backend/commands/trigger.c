@@ -2975,7 +2975,7 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 					 TupleTableSlot *slot)
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
-	HeapTuple	slottuple = ExecMaterializeSlot(slot);
+	HeapTuple	slottuple = ExecGetHeapTupleFromSlot(slot);
 	HeapTuple	newtuple = slottuple;
 	TriggerData LocTriggerData;
 	HeapTuple	trigtuple;
@@ -4265,15 +4265,21 @@ AfterTriggerExecute(AfterTriggerEvent event,
 			 * other tuples out of memory.)  The distinction is academic,
 			 * because we start with a minimal tuple that ExecFetchSlotTuple()
 			 * must materialize anyway.
+			 *
+			 * TODO: Need to change the comment here since we are using
+			 * ExecGetHeapTupleFromSlot() instead of ExecMaterializeSlot(),
+			 * which for virtual TTS, minimal TTS will use separate storage for
+			 * the heap tuple created. That may not be true for heap TTS or
+			 * buffer heap TTS.
 			 */
 			LocTriggerData.tg_trigtuple =
-				ExecMaterializeSlot(trig_tuple_slot1);
+				ExecGetHeapTupleFromSlot(trig_tuple_slot1);
 			LocTriggerData.tg_trigtuplebuf = InvalidBuffer;
 
 			LocTriggerData.tg_newtuple =
 				((evtshared->ats_event & TRIGGER_EVENT_OPMASK) ==
 				 TRIGGER_EVENT_UPDATE) ?
-				ExecMaterializeSlot(trig_tuple_slot2) : NULL;
+				ExecGetHeapTupleFromSlot(trig_tuple_slot2) : NULL;
 			LocTriggerData.tg_newtuplebuf = InvalidBuffer;
 
 			break;

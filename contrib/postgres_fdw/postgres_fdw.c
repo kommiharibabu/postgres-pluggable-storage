@@ -3955,7 +3955,7 @@ apply_returning_filter(PgFdwDirectModifyState *dmstate,
 	 */
 	if (dmstate->hasSystemCols)
 	{
-		HeapTuple	resultTup = ExecMaterializeSlot(resultSlot);
+		HeapTuple	resultTup = ExecGetHeapTupleFromSlot(resultSlot);
 
 		/* ctid */
 		if (dmstate->ctidAttno)
@@ -3988,6 +3988,9 @@ apply_returning_filter(PgFdwDirectModifyState *dmstate,
 		HeapTupleHeaderSetXmin(resultTup->t_data, InvalidTransactionId);
 		HeapTupleHeaderSetXmax(resultTup->t_data, InvalidTransactionId);
 		HeapTupleHeaderSetCmin(resultTup->t_data, InvalidTransactionId);
+
+		/* Store the modified tuple into the slot. */
+		ExecStoreTuple(resultTup, resultSlot, InvalidBuffer, true);
 	}
 
 	/*

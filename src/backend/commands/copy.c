@@ -2714,7 +2714,7 @@ CopyFrom(CopyState cstate)
 			if (slot == NULL)	/* "do nothing" */
 				skip_tuple = true;
 			else				/* trigger might have changed tuple */
-				tuple = ExecMaterializeSlot(slot);
+				tuple = ExecGetHeapTupleFromSlot(slot);
 		}
 
 		if (!skip_tuple)
@@ -2788,7 +2788,7 @@ CopyFrom(CopyState cstate)
 							goto next_tuple;
 
 						/* FDW might have changed tuple */
-						tuple = ExecMaterializeSlot(slot);
+						tuple = ExecGetHeapTupleFromSlot(slot);
 
 						/*
 						 * AFTER ROW Triggers might reference the tableoid

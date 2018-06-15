@@ -1518,7 +1518,7 @@ ExecCopySlot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 		 * destination slot is not a virtual tuple table slot, first deform the
 		 * tuple inside it.
 		 */
-		if (!TTS_IS_VIRTUAL(srcslot));
+		if (!TTS_IS_VIRTUAL(srcslot))
 		{
 			slot_getallattrs(srcslot);
 

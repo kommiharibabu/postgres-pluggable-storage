@@ -21,6 +21,7 @@
 #include "access/multixact.h"
 #include "access/relscan.h"
 #include "access/rewriteheap.h"
+#include "access/tableamapi.h"
 #include "access/transam.h"
 #include "access/tuptoaster.h"
 #include "access/xact.h"
@@ -73,9 +74,8 @@ static void copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex,
 			   TransactionId *pFreezeXid, MultiXactId *pCutoffMulti);
 static List *get_tables_to_cluster(MemoryContext cluster_context);
 static void reform_and_rewrite_tuple(HeapTuple tuple,
-						 TupleDesc oldTupDesc, TupleDesc newTupDesc,
-						 Datum *values, bool *isnull,
-						 bool newRelHasOids, RewriteState rwstate);
+						 Relation OldHeap, Relation NewHeap,
+						 Datum *values, bool *isnull, RewriteState rwstate);
 
 
 /*---------------------------------------------------------------------------
@@ -679,6 +679,7 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
 										  InvalidOid,
 										  InvalidOid,
 										  OldHeap->rd_rel->relowner,
+										  OldHeap->rd_rel->relam,
 										  OldHeapDesc,
 										  NIL,
 										  RELKIND_RELATION,
@@ -762,7 +763,7 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	Datum	   *values;
 	bool	   *isnull;
 	IndexScanDesc indexScan;
-	HeapScanDesc heapScan;
+	TableScanDesc heapScan;
 	bool		use_wal;
 	bool		is_system_catalog;
 	TransactionId OldestXmin;
@@ -777,6 +778,7 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	BlockNumber num_pages;
 	int			elevel = verbose ? INFO : DEBUG2;
 	PGRUsage	ru0;
+	TupleTableSlot *slot;
 
 	pg_rusage_init(&ru0);
 
@@ -892,7 +894,7 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	is_system_catalog = IsSystemRelation(OldHeap);
 
 	/* Initialize the rewrite operation */
-	rwstate = begin_heap_rewrite(OldHeap, NewHeap, OldestXmin, FreezeXid,
+	rwstate = table_begin_rewrite(OldHeap, NewHeap, OldestXmin, FreezeXid,
 								 MultiXactCutoff, use_wal);
 
 	/*
@@ -928,7 +930,7 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	}
 	else
 	{
-		heapScan = heap_beginscan(OldHeap, SnapshotAny, 0, (ScanKey) NULL);
+		heapScan = table_beginscan(OldHeap, SnapshotAny, 0, (ScanKey) NULL);
 		indexScan = NULL;
 	}
 
@@ -950,6 +952,8 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 						get_namespace_name(RelationGetNamespace(OldHeap)),
 						RelationGetRelationName(OldHeap))));
 
+	slot = table_gimmegimmeslot(OldHeap, NULL);
+
 	/*
 	 * Scan through the OldHeap, either in OldIndex order or sequentially;
 	 * copy each tuple into the NewHeap, or transiently to the tuplesort
@@ -958,36 +962,27 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	 */
 	for (;;)
 	{
-		HeapTuple	tuple;
-		Buffer		buf;
 		bool		isdead;
+		TransactionId xid;
 
 		CHECK_FOR_INTERRUPTS();
 
 		if (indexScan != NULL)
 		{
-			tuple = index_getnext(indexScan, ForwardScanDirection);
-			if (tuple == NULL)
+			if (!index_getnext_slot(indexScan, ForwardScanDirection, slot))
 				break;
 
 			/* Since we used no scan keys, should never need to recheck */
 			if (indexScan->xs_recheck)
 				elog(ERROR, "CLUSTER does not support lossy index conditions");
-
-			buf = indexScan->xs_cbuf;
 		}
 		else
 		{
-			tuple = heap_getnext(heapScan, ForwardScanDirection);
-			if (tuple == NULL)
+			if (!table_scan_getnextslot(heapScan, ForwardScanDirection, slot))
 				break;
-
-			buf = heapScan->rs_cbuf;
 		}
 
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-
-		switch (HeapTupleSatisfiesVacuum(tuple, OldestXmin, buf))
+		switch (OldHeap->rd_tableamroutine->snapshot_satisfiesVacuum(slot, OldestXmin))
 		{
 			case HEAPTUPLE_DEAD:
 				/* Definitely dead */
@@ -1010,8 +1005,9 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 				 * there.  Give a warning if neither case applies; but in any
 				 * case we had better copy it.
 				 */
-				if (!is_system_catalog &&
-					!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(tuple->t_data)))
+				xid = table_tuple_get_data(OldHeap, slot, XMIN).xid;
+
+				if (!is_system_catalog && !TransactionIdIsCurrentTransactionId(xid))
 					elog(WARNING, "concurrent insert in progress within table \"%s\"",
 						 RelationGetRelationName(OldHeap));
 				/* treat as live */
@@ -1022,8 +1018,8 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 				/*
 				 * Similar situation to INSERT_IN_PROGRESS case.
 				 */
-				if (!is_system_catalog &&
-					!TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetUpdateXid(tuple->t_data)))
+				xid = table_tuple_get_data(OldHeap, slot, UPDATED_XID).xid;
+				if (!is_system_catalog && !TransactionIdIsCurrentTransactionId(xid))
 					elog(WARNING, "concurrent delete in progress within table \"%s\"",
 						 RelationGetRelationName(OldHeap));
 				/* treat as recently dead */
@@ -1036,13 +1032,11 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 				break;
 		}
 
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-
 		if (isdead)
 		{
 			tups_vacuumed += 1;
 			/* heap rewrite module still needs to see it... */
-			if (rewrite_heap_dead_tuple(rwstate, tuple))
+			if (rewrite_heap_dead_tuple(rwstate, ExecFetchSlotTuple(slot)))
 			{
 				/* A previous recently-dead tuple is now known dead */
 				tups_vacuumed += 1;
@@ -1053,18 +1047,19 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 
 		num_tuples += 1;
 		if (tuplesort != NULL)
-			tuplesort_putheaptuple(tuplesort, tuple);
+			tuplesort_puttupleslot(tuplesort, slot);
 		else
-			reform_and_rewrite_tuple(tuple,
-									 oldTupDesc, newTupDesc,
-									 values, isnull,
-									 NewHeap->rd_rel->relhasoids, rwstate);
+			reform_and_rewrite_tuple(ExecFetchSlotTuple(slot),
+									 OldHeap, NewHeap,
+									 values, isnull, rwstate);
 	}
 
 	if (indexScan != NULL)
 		index_endscan(indexScan);
 	if (heapScan != NULL)
-		heap_endscan(heapScan);
+		table_endscan(heapScan);
+
+	ExecDropSingleTupleTableSlot(slot);
 
 	/*
 	 * In scan-and-sort mode, complete the sort, then read out all live tuples
@@ -1085,9 +1080,8 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 				break;
 
 			reform_and_rewrite_tuple(tuple,
-									 oldTupDesc, newTupDesc,
-									 values, isnull,
-									 NewHeap->rd_rel->relhasoids, rwstate);
+									 OldHeap, NewHeap,
+									 values, isnull, rwstate);
 		}
 
 		tuplesort_end(tuplesort);
@@ -1692,7 +1686,7 @@ static List *
 get_tables_to_cluster(MemoryContext cluster_context)
 {
 	Relation	indRelation;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	ScanKeyData entry;
 	HeapTuple	indexTuple;
 	Form_pg_index index;
@@ -1711,8 +1705,8 @@ get_tables_to_cluster(MemoryContext cluster_context)
 				Anum_pg_index_indisclustered,
 				BTEqualStrategyNumber, F_BOOLEQ,
 				BoolGetDatum(true));
-	scan = heap_beginscan_catalog(indRelation, 1, &entry);
-	while ((indexTuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	scan = table_beginscan_catalog(indRelation, 1, &entry);
+	while ((indexTuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		index = (Form_pg_index) GETSTRUCT(indexTuple);
 
@@ -1732,7 +1726,7 @@ get_tables_to_cluster(MemoryContext cluster_context)
 
 		MemoryContextSwitchTo(old_context);
 	}
-	heap_endscan(scan);
+	table_endscan(scan);
 
 	relation_close(indRelation, AccessShareLock);
 
@@ -1758,10 +1752,11 @@ get_tables_to_cluster(MemoryContext cluster_context)
  */
 static void
 reform_and_rewrite_tuple(HeapTuple tuple,
-						 TupleDesc oldTupDesc, TupleDesc newTupDesc,
-						 Datum *values, bool *isnull,
-						 bool newRelHasOids, RewriteState rwstate)
+						 Relation OldHeap, Relation NewHeap,
+						 Datum *values, bool *isnull, RewriteState rwstate)
 {
+	TupleDesc oldTupDesc = RelationGetDescr(OldHeap);
+	TupleDesc newTupDesc = RelationGetDescr(NewHeap);
 	HeapTuple	copiedTuple;
 	int			i;
 
@@ -1777,11 +1772,11 @@ reform_and_rewrite_tuple(HeapTuple tuple,
 	copiedTuple = heap_form_tuple(newTupDesc, values, isnull);
 
 	/* Preserve OID, if any */
-	if (newRelHasOids)
+	if (NewHeap->rd_rel->relhasoids)
 		HeapTupleSetOid(copiedTuple, HeapTupleGetOid(tuple));
 
 	/* The heap rewrite module does the rest */
-	rewrite_heap_tuple(rwstate, tuple, copiedTuple);
+	table_rewrite_tuple(NewHeap, rwstate, tuple, copiedTuple);
 
 	heap_freetuple(copiedTuple);
 }

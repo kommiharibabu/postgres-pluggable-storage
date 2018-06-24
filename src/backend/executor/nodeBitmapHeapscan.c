@@ -38,6 +38,7 @@
 #include <math.h>
 
 #include "access/relscan.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
 #include "executor/execdebug.h"
@@ -54,14 +55,14 @@
 
 
 static TupleTableSlot *BitmapHeapNext(BitmapHeapScanState *node);
-static void bitgetpage(HeapScanDesc scan, TBMIterateResult *tbmres);
+static void bitgetpage(BitmapHeapScanState *node, TBMIterateResult *tbmres);
 static inline void BitmapDoneInitializingSharedState(
 								  ParallelBitmapHeapState *pstate);
 static inline void BitmapAdjustPrefetchIterator(BitmapHeapScanState *node,
 							 TBMIterateResult *tbmres);
 static inline void BitmapAdjustPrefetchTarget(BitmapHeapScanState *node);
 static inline void BitmapPrefetch(BitmapHeapScanState *node,
-			   HeapScanDesc scan);
+			   TableScanDesc scan);
 static bool BitmapShouldInitializeSharedState(
 								  ParallelBitmapHeapState *pstate);
 
@@ -76,7 +77,15 @@ static TupleTableSlot *
 BitmapHeapNext(BitmapHeapScanState *node)
 {
 	ExprContext *econtext;
-	HeapScanDesc scan;
+	TableScanDesc scan;
+
+	/*
+	 * FIXME: We definitely can't access a HeapPageScanDesc here. This needs
+	 * to be reworked so bit bitgetpage() is a part of the tableam API,
+	 * returning vistuples. Then table_tuple_fetch_from_offset instead becomes
+	 * a scan API that returns an offset from the current page.
+	 */
+	HeapPageScanDesc pagescan;
 	TIDBitmap  *tbm;
 	TBMIterator *tbmiterator = NULL;
 	TBMSharedIterator *shared_tbmiterator = NULL;
@@ -92,6 +101,7 @@ BitmapHeapNext(BitmapHeapScanState *node)
 	econtext = node->ss.ps.ps_ExprContext;
 	slot = node->ss.ss_ScanTupleSlot;
 	scan = node->ss.ss_currentScanDesc;
+	pagescan = node->pagescan;
 	tbm = node->tbm;
 	if (pstate == NULL)
 		tbmiterator = node->tbmiterator;
@@ -191,9 +201,6 @@ BitmapHeapNext(BitmapHeapScanState *node)
 
 	for (;;)
 	{
-		Page		dp;
-		ItemId		lp;
-
 		CHECK_FOR_INTERRUPTS();
 
 		/*
@@ -219,7 +226,7 @@ BitmapHeapNext(BitmapHeapScanState *node)
 			 * least AccessShareLock on the table before performing any of the
 			 * indexscans, but let's be safe.)
 			 */
-			if (tbmres->blockno >= scan->rs_nblocks)
+			if (tbmres->blockno >= pagescan->rs_nblocks)
 			{
 				node->tbmres = tbmres = NULL;
 				continue;
@@ -242,14 +249,14 @@ BitmapHeapNext(BitmapHeapScanState *node)
 				 * The number of tuples on this page is put into
 				 * scan->rs_ntuples; note we don't fill scan->rs_vistuples.
 				 */
-				scan->rs_ntuples = tbmres->ntuples;
+				pagescan->rs_ntuples = tbmres->ntuples;
 			}
 			else
 			{
 				/*
 				 * Fetch the current heap page and identify candidate tuples.
 				 */
-				bitgetpage(scan, tbmres);
+				bitgetpage(node, tbmres);
 			}
 
 			if (tbmres->ntuples >= 0)
@@ -260,7 +267,7 @@ BitmapHeapNext(BitmapHeapScanState *node)
 			/*
 			 * Set rs_cindex to first slot to examine
 			 */
-			scan->rs_cindex = 0;
+			pagescan->rs_cindex = 0;
 
 			/* Adjust the prefetch target */
 			BitmapAdjustPrefetchTarget(node);
@@ -270,7 +277,7 @@ BitmapHeapNext(BitmapHeapScanState *node)
 			/*
 			 * Continuing in previously obtained page; advance rs_cindex
 			 */
-			scan->rs_cindex++;
+			pagescan->rs_cindex++;
 
 #ifdef USE_PREFETCH
 
@@ -297,7 +304,7 @@ BitmapHeapNext(BitmapHeapScanState *node)
 		/*
 		 * Out of range?  If so, nothing more to look at on this page
 		 */
-		if (scan->rs_cindex < 0 || scan->rs_cindex >= scan->rs_ntuples)
+		if (pagescan->rs_cindex < 0 || pagescan->rs_cindex >= pagescan->rs_ntuples)
 		{
 			node->tbmres = tbmres = NULL;
 			continue;
@@ -324,26 +331,8 @@ BitmapHeapNext(BitmapHeapScanState *node)
 			/*
 			 * Okay to fetch the tuple.
 			 */
-			targoffset = scan->rs_vistuples[scan->rs_cindex];
-			dp = (Page) BufferGetPage(scan->rs_cbuf);
-			lp = PageGetItemId(dp, targoffset);
-			Assert(ItemIdIsNormal(lp));
-
-			scan->rs_ctup.t_data = (HeapTupleHeader) PageGetItem((Page) dp, lp);
-			scan->rs_ctup.t_len = ItemIdGetLength(lp);
-			scan->rs_ctup.t_tableOid = scan->rs_rd->rd_id;
-			ItemPointerSet(&scan->rs_ctup.t_self, tbmres->blockno, targoffset);
-
-			pgstat_count_heap_fetch(scan->rs_rd);
-
-			/*
-			 * Set up the result slot to point to this tuple.  Note that the
-			 * slot acquires a pin on the buffer.
-			 */
-			ExecStoreTuple(&scan->rs_ctup,
-						   slot,
-						   scan->rs_cbuf,
-						   false);
+			targoffset = pagescan->rs_vistuples[pagescan->rs_cindex];
+			table_tuple_fetch_from_offset(scan, tbmres->blockno, targoffset, slot);
 
 			/*
 			 * If we are using lossy info, we have to recheck the qual
@@ -380,8 +369,11 @@ BitmapHeapNext(BitmapHeapScanState *node)
  * interesting according to the bitmap, and visible according to the snapshot.
  */
 static void
-bitgetpage(HeapScanDesc scan, TBMIterateResult *tbmres)
+bitgetpage(BitmapHeapScanState *node, TBMIterateResult *tbmres)
 {
+	TableScanDesc scan = node->ss.ss_currentScanDesc;
+	HeapPageScanDesc pagescan = node->pagescan;
+	TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
 	BlockNumber page = tbmres->blockno;
 	Buffer		buffer;
 	Snapshot	snapshot;
@@ -390,7 +382,7 @@ bitgetpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 	/*
 	 * Acquire pin on the target heap page, trading in any pin we held before.
 	 */
-	Assert(page < scan->rs_nblocks);
+	Assert(page < pagescan->rs_nblocks);
 
 	scan->rs_cbuf = ReleaseAndReadBuffer(scan->rs_cbuf,
 										 scan->rs_rd,
@@ -433,7 +425,7 @@ bitgetpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 			ItemPointerSet(&tid, page, offnum);
 			if (heap_hot_search_buffer(&tid, scan->rs_rd, buffer, snapshot,
 									   &heapTuple, NULL, true))
-				scan->rs_vistuples[ntup++] = ItemPointerGetOffsetNumber(&tid);
+				pagescan->rs_vistuples[ntup++] = ItemPointerGetOffsetNumber(&tid);
 		}
 	}
 	else
@@ -449,23 +441,22 @@ bitgetpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 		for (offnum = FirstOffsetNumber; offnum <= maxoff; offnum = OffsetNumberNext(offnum))
 		{
 			ItemId		lp;
-			HeapTupleData loctup;
 			bool		valid;
+			BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
 
 			lp = PageGetItemId(dp, offnum);
 			if (!ItemIdIsNormal(lp))
 				continue;
-			loctup.t_data = (HeapTupleHeader) PageGetItem((Page) dp, lp);
-			loctup.t_len = ItemIdGetLength(lp);
-			loctup.t_tableOid = scan->rs_rd->rd_id;
-			ItemPointerSet(&loctup.t_self, page, offnum);
-			valid = HeapTupleSatisfiesVisibility(&loctup, snapshot, buffer);
+
+			/* FIXME: unnecessarily pins */
+			table_tuple_fetch_from_offset(scan, page, offnum, slot);
+			valid = HeapTupleSatisfies(bslot->base.tuple, snapshot, bslot->buffer);
 			if (valid)
 			{
-				scan->rs_vistuples[ntup++] = offnum;
-				PredicateLockTuple(scan->rs_rd, &loctup, snapshot);
+				pagescan->rs_vistuples[ntup++] = offnum;
+				PredicateLockTuple(scan->rs_rd, bslot->base.tuple, snapshot);
 			}
-			CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
+			CheckForSerializableConflictOut(valid, scan->rs_rd, bslot->base.tuple,
 											buffer, snapshot);
 		}
 	}
@@ -473,7 +464,7 @@ bitgetpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
 	Assert(ntup <= MaxHeapTuplesPerPage);
-	scan->rs_ntuples = ntup;
+	pagescan->rs_ntuples = ntup;
 }
 
 /*
@@ -599,7 +590,7 @@ BitmapAdjustPrefetchTarget(BitmapHeapScanState *node)
  * BitmapPrefetch - Prefetch, if prefetch_pages are behind prefetch_target
  */
 static inline void
-BitmapPrefetch(BitmapHeapScanState *node, HeapScanDesc scan)
+BitmapPrefetch(BitmapHeapScanState *node, TableScanDesc scan)
 {
 #ifdef USE_PREFETCH
 	ParallelBitmapHeapState *pstate = node->pstate;
@@ -742,7 +733,7 @@ ExecReScanBitmapHeapScan(BitmapHeapScanState *node)
 	PlanState  *outerPlan = outerPlanState(node);
 
 	/* rescan to release any page pin */
-	heap_rescan(node->ss.ss_currentScanDesc, NULL);
+	table_rescan(node->ss.ss_currentScanDesc, NULL);
 
 	/* release bitmaps and buffers if any */
 	if (node->tbmiterator)
@@ -787,7 +778,7 @@ void
 ExecEndBitmapHeapScan(BitmapHeapScanState *node)
 {
 	Relation	relation;
-	HeapScanDesc scanDesc;
+	TableScanDesc scanDesc;
 
 	/*
 	 * extract information from the node
@@ -832,7 +823,7 @@ ExecEndBitmapHeapScan(BitmapHeapScanState *node)
 	/*
 	 * close heap scan
 	 */
-	heap_endscan(scanDesc);
+	table_endscan(scanDesc);
 
 	/*
 	 * close the heap relation.
@@ -965,10 +956,12 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 	 * Even though we aren't going to do a conventional seqscan, it is useful
 	 * to create a HeapScanDesc --- most of the fields in it are usable.
 	 */
-	scanstate->ss.ss_currentScanDesc = heap_beginscan_bm(currentRelation,
-														 estate->es_snapshot,
-														 0,
-														 NULL);
+	scanstate->ss.ss_currentScanDesc = table_beginscan_bm(currentRelation,
+															estate->es_snapshot,
+															0,
+															NULL);
+
+	scanstate->pagescan = tableam_get_heappagescandesc(scanstate->ss.ss_currentScanDesc);
 
 	/*
 	 * all done.
@@ -1116,5 +1109,5 @@ ExecBitmapHeapInitializeWorker(BitmapHeapScanState *node,
 	node->pstate = pstate;
 
 	snapshot = RestoreSnapshot(pstate->phs_snapshot_data);
-	heap_update_snapshot(node->ss.ss_currentScanDesc, snapshot);
+	table_scan_update_snapshot(node->ss.ss_currentScanDesc, snapshot);
 }

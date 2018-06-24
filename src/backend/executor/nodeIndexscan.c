@@ -51,7 +51,7 @@
 typedef struct
 {
 	pairingheap_node ph_node;
-	HeapTuple	htup;
+	HeapTuple htup;
 	Datum	   *orderbyvals;
 	bool	   *orderbynulls;
 } ReorderTuple;
@@ -84,7 +84,6 @@ IndexNext(IndexScanState *node)
 	ExprContext *econtext;
 	ScanDirection direction;
 	IndexScanDesc scandesc;
-	HeapTuple	tuple;
 	TupleTableSlot *slot;
 
 	/*
@@ -131,19 +130,9 @@ IndexNext(IndexScanState *node)
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
-	while ((tuple = index_getnext(scandesc, direction)) != NULL)
+	while (index_getnext_slot(scandesc, direction, slot))
 	{
 		CHECK_FOR_INTERRUPTS();
-
-		/*
-		 * Store the scanned tuple in the scan tuple slot of the scan state.
-		 * Note: we pass 'false' because tuples returned by amgetnext are
-		 * pointers onto disk pages and must not be pfree()'d.
-		 */
-		ExecStoreTuple(tuple,	/* tuple to store */
-					   slot,	/* slot to store in */
-					   scandesc->xs_cbuf,	/* buffer containing tuple */
-					   false);	/* don't pfree */
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals using
@@ -184,7 +173,6 @@ IndexNextWithReorder(IndexScanState *node)
 	EState	   *estate;
 	ExprContext *econtext;
 	IndexScanDesc scandesc;
-	HeapTuple	tuple;
 	TupleTableSlot *slot;
 	ReorderTuple *topmost = NULL;
 	bool		was_exact;
@@ -253,10 +241,13 @@ IndexNextWithReorder(IndexScanState *node)
 								scandesc->xs_orderbynulls,
 								node) <= 0)
 			{
+				HeapTuple tuple;
+
 				tuple = reorderqueue_pop(node);
 
 				/* Pass 'true', as the tuple in the queue is a palloc'd copy */
 				ExecStoreTuple(tuple, slot, InvalidBuffer, true);
+				slot->tts_tableOid = RelationGetRelid(scandesc->heapRelation);
 				return slot;
 			}
 		}
@@ -272,8 +263,7 @@ IndexNextWithReorder(IndexScanState *node)
 		 */
 next_indextuple:
 		slot = node->ss.ss_ScanTupleSlot;
-		tuple = index_getnext(scandesc, ForwardScanDirection);
-		if (!tuple)
+		if (!index_getnext_slot(scandesc, ForwardScanDirection, slot))
 		{
 			/*
 			 * No more tuples from the index.  But we still need to drain any
@@ -282,16 +272,6 @@ next_indextuple:
 			node->iss_ReachedEnd = true;
 			continue;
 		}
-
-		/*
-		 * Store the scanned tuple in the scan tuple slot of the scan state.
-		 * Note: we pass 'false' because tuples returned by amgetnext are
-		 * pointers onto disk pages and must not be pfree()'d.
-		 */
-		ExecStoreTuple(tuple,	/* tuple to store */
-					   slot,	/* slot to store in */
-					   scandesc->xs_cbuf,	/* buffer containing tuple */
-					   false);	/* don't pfree */
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals and
@@ -360,6 +340,8 @@ next_indextuple:
 													  topmost->orderbynulls,
 													  node) > 0))
 		{
+			HeapTuple tuple = ExecFetchSlotTuple(slot);
+
 			/* Put this tuple to the queue */
 			reorderqueue_push(node, tuple, lastfetched_vals, lastfetched_nulls);
 			continue;
@@ -516,7 +498,7 @@ reorderqueue_push(IndexScanState *node, HeapTuple tuple,
 static HeapTuple
 reorderqueue_pop(IndexScanState *node)
 {
-	HeapTuple	result;
+	HeapTuple result;
 	ReorderTuple *topmost;
 	int			i;
 
@@ -856,7 +838,7 @@ ExecIndexMarkPos(IndexScanState *node)
 {
 	EState	   *estate = node->ss.ps.state;
 
-	if (estate->es_epqTuple != NULL)
+	if (estate->es_epqTupleSlot != NULL)
 	{
 		/*
 		 * We are inside an EvalPlanQual recheck.  If a test tuple exists for
@@ -891,7 +873,7 @@ ExecIndexRestrPos(IndexScanState *node)
 {
 	EState	   *estate = node->ss.ps.state;
 
-	if (estate->es_epqTuple != NULL)
+	if (estate->es_epqTupleSlot != NULL)
 	{
 		/* See comments in ExecIndexMarkPos */
 		Index		scanrelid = ((Scan *) node->ss.ps.plan)->scanrelid;

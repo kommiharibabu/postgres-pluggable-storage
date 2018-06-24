@@ -126,13 +126,13 @@
 
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
+#include "storage/procarray.h"
 #include "storage/smgr.h"
 
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
-#include "storage/procarray.h"
 
 /*
  * State associated with a rewrite operation. This is opaque to the user
@@ -357,7 +357,7 @@ end_heap_rewrite(RewriteState state)
 	 * wrote before the checkpoint.
 	 */
 	if (RelationNeedsWAL(state->rs_new_rel))
-		heap_sync(state->rs_new_rel);
+		table_sync(state->rs_new_rel);
 
 	logical_end_heap_rewrite(state);
 

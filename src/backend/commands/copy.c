@@ -20,6 +20,7 @@
 
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -2045,16 +2046,16 @@ CopyTo(CopyState cstate)
 	{
 		Datum	   *values;
 		bool	   *nulls;
-		HeapScanDesc scandesc;
+		TableScanDesc scandesc;
 		HeapTuple	tuple;
 
 		values = (Datum *) palloc(num_phys_attrs * sizeof(Datum));
 		nulls = (bool *) palloc(num_phys_attrs * sizeof(bool));
 
-		scandesc = heap_beginscan(cstate->rel, GetActiveSnapshot(), 0, NULL);
+		scandesc = table_beginscan(cstate->rel, GetActiveSnapshot(), 0, NULL);
 
 		processed = 0;
-		while ((tuple = heap_getnext(scandesc, ForwardScanDirection)) != NULL)
+		while ((tuple = heap_scan_getnext(scandesc, ForwardScanDirection)) != NULL)
 		{
 			CHECK_FOR_INTERRUPTS();
 
@@ -2066,7 +2067,7 @@ CopyTo(CopyState cstate)
 			processed++;
 		}
 
-		heap_endscan(scandesc);
+		table_endscan(scandesc);
 
 		pfree(values);
 		pfree(nulls);
@@ -2315,7 +2316,7 @@ CopyFrom(CopyState cstate)
 	ErrorContextCallback errcallback;
 	CommandId	mycid = GetCurrentCommandId(true);
 	int			hi_options = 0; /* start with default heap_insert options */
-	BulkInsertState bistate;
+	void       *bistate;
 	uint64		processed = 0;
 	bool		useHeapMultiInsert;
 	int			nBufferedTuples = 0;
@@ -2469,9 +2470,6 @@ CopyFrom(CopyState cstate)
 	/* Set up a tuple slot too */
 	myslot = ExecInitExtraTupleSlot(estate, tupDesc,
 									TTS_TYPE_HEAPTUPLE);
-	/* Triggers might need a slot as well */
-	estate->es_trig_tuple_slot = ExecInitExtraTupleSlot(estate, NULL,
-														TTS_TYPE_HEAPTUPLE);
 
 	/*
 	 * Set up a ModifyTableState so we can let FDW(s) init themselves for
@@ -2557,7 +2555,7 @@ CopyFrom(CopyState cstate)
 	values = (Datum *) palloc(tupDesc->natts * sizeof(Datum));
 	nulls = (bool *) palloc(tupDesc->natts * sizeof(bool));
 
-	bistate = GetBulkInsertState();
+	bistate = table_getbulkinsertstate(resultRelInfo->ri_RelationDesc);
 	econtext = GetPerTupleExprContext(estate);
 
 	/* Set up callback to identify error line number */
@@ -2637,7 +2635,7 @@ CopyFrom(CopyState cstate)
 			 */
 			if (prev_leaf_part_index != leaf_part_index)
 			{
-				ReleaseBulkInsertStatePin(bistate);
+				table_releasebulkinsertstate(resultRelInfo->ri_RelationDesc, bistate);
 				prev_leaf_part_index = leaf_part_index;
 			}
 
@@ -2709,10 +2707,8 @@ CopyFrom(CopyState cstate)
 		if (resultRelInfo->ri_TrigDesc &&
 			resultRelInfo->ri_TrigDesc->trig_insert_before_row)
 		{
-			slot = ExecBRInsertTriggers(estate, resultRelInfo, slot);
-
-			if (slot == NULL)	/* "do nothing" */
-				skip_tuple = true;
+			if (!ExecBRInsertTriggers(estate, resultRelInfo, slot))
+				skip_tuple = true;	/* "do nothing" */
 			else				/* trigger might have changed tuple */
 				tuple = ExecGetHeapTupleFromSlot(slot);
 		}
@@ -2798,20 +2794,22 @@ CopyFrom(CopyState cstate)
 						tuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
 					}
 					else
-						heap_insert(resultRelInfo->ri_RelationDesc, tuple,
-									mycid, hi_options, bistate);
+					{
+						/* OK, store the tuple and create index entries for it */
+						table_insert(resultRelInfo->ri_RelationDesc, slot, mycid, hi_options,
+									 bistate);
+					}
 
 					/* And create index entries for it */
 					if (resultRelInfo->ri_NumIndices > 0)
 						recheckIndexes = ExecInsertIndexTuples(slot,
-															   &(tuple->t_self),
 															   estate,
 															   false,
 															   NULL,
 															   NIL);
 
 					/* AFTER ROW INSERT Triggers */
-					ExecARInsertTriggers(estate, resultRelInfo, tuple,
+					ExecARInsertTriggers(estate, resultRelInfo, slot,
 										 recheckIndexes, cstate->transition_capture);
 
 					list_free(recheckIndexes);
@@ -2845,7 +2843,7 @@ next_tuple:
 	/* Done, clean up */
 	error_context_stack = errcallback.previous;
 
-	FreeBulkInsertState(bistate);
+	table_freebulkinsertstate(resultRelInfo->ri_RelationDesc, bistate);
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -2889,7 +2887,7 @@ next_tuple:
 	 * indexes since those use WAL anyway)
 	 */
 	if (hi_options & HEAP_INSERT_SKIP_WAL)
-		heap_sync(cstate->rel);
+		table_sync(cstate->rel);
 
 	return processed;
 }
@@ -2922,12 +2920,12 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 	 * before calling it.
 	 */
 	oldcontext = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-	heap_multi_insert(cstate->rel,
-					  bufferedTuples,
-					  nBufferedTuples,
-					  mycid,
-					  hi_options,
-					  bistate);
+	table_multi_insert(cstate->rel,
+					   bufferedTuples,
+					   nBufferedTuples,
+					   mycid,
+					   hi_options,
+					   bistate);
 	MemoryContextSwitchTo(oldcontext);
 
 	/*
@@ -2943,10 +2941,9 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 			cstate->cur_lineno = firstBufferedLineNo + i;
 			ExecStoreTuple(bufferedTuples[i], myslot, InvalidBuffer, false);
 			recheckIndexes =
-				ExecInsertIndexTuples(myslot, &(bufferedTuples[i]->t_self),
-									  estate, false, NULL, NIL);
+				ExecInsertIndexTuples(myslot, estate, false, NULL, NIL);
 			ExecARInsertTriggers(estate, resultRelInfo,
-								 bufferedTuples[i],
+								 myslot,
 								 recheckIndexes, cstate->transition_capture);
 			list_free(recheckIndexes);
 		}
@@ -2963,8 +2960,9 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 		for (i = 0; i < nBufferedTuples; i++)
 		{
 			cstate->cur_lineno = firstBufferedLineNo + i;
+			ExecStoreTuple(bufferedTuples[i], myslot, InvalidBuffer, false);
 			ExecARInsertTriggers(estate, resultRelInfo,
-								 bufferedTuples[i],
+								 myslot,
 								 NIL, cstate->transition_capture);
 		}
 	}

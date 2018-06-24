@@ -27,6 +27,7 @@
 #include "access/multixact.h"
 #include "access/relscan.h"
 #include "access/reloptions.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
@@ -911,6 +912,7 @@ index_create(Relation heapRelation,
 								tableSpaceId,
 								indexRelationId,
 								relFileNode,
+								accessMethodObjectId,
 								indexTupDesc,
 								relkind,
 								relpersistence,
@@ -934,7 +936,6 @@ index_create(Relation heapRelation,
 	 * XXX should have a cleaner way to create cataloged indexes
 	 */
 	indexRelation->rd_rel->relowner = heapRelation->rd_rel->relowner;
-	indexRelation->rd_rel->relam = accessMethodObjectId;
 	indexRelation->rd_rel->relhasoids = false;
 	indexRelation->rd_rel->relispartition = OidIsValid(parentIndexRelid);
 
@@ -2134,7 +2135,7 @@ index_update_stats(Relation rel,
 		ReindexIsProcessingHeap(RelationRelationId))
 	{
 		/* don't assume syscache will work */
-		HeapScanDesc pg_class_scan;
+		TableScanDesc pg_class_scan;
 		ScanKeyData key[1];
 
 		ScanKeyInit(&key[0],
@@ -2142,10 +2143,10 @@ index_update_stats(Relation rel,
 					BTEqualStrategyNumber, F_OIDEQ,
 					ObjectIdGetDatum(relid));
 
-		pg_class_scan = heap_beginscan_catalog(pg_class, 1, key);
-		tuple = heap_getnext(pg_class_scan, ForwardScanDirection);
+		pg_class_scan = table_beginscan_catalog(pg_class, 1, key);
+		tuple = heap_scan_getnext(pg_class_scan, ForwardScanDirection);
 		tuple = heap_copytuple(tuple);
-		heap_endscan(pg_class_scan);
+		table_endscan(pg_class_scan);
 	}
 	else
 	{
@@ -2432,7 +2433,7 @@ IndexBuildHeapScan(Relation heapRelation,
 				   bool allow_sync,
 				   IndexBuildCallback callback,
 				   void *callback_state,
-				   HeapScanDesc scan)
+				   TableScanDesc scan)
 {
 	return IndexBuildHeapRangeScan(heapRelation, indexRelation,
 								   indexInfo, allow_sync,
@@ -2461,7 +2462,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 						BlockNumber numblocks,
 						IndexBuildCallback callback,
 						void *callback_state,
-						HeapScanDesc scan)
+						TableScanDesc scan)
 {
 	bool		is_system_catalog;
 	bool		checking_uniqueness;
@@ -2541,7 +2542,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 		else
 			snapshot = SnapshotAny;
 
-		scan = heap_beginscan_strat(heapRelation,	/* relation */
+		scan = table_beginscan_strat(heapRelation,	/* relation */
 									snapshot,	/* snapshot */
 									0,	/* number of keys */
 									NULL,	/* scan key */
@@ -2575,7 +2576,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 
 	/* set our scan endpoints */
 	if (!allow_sync)
-		heap_setscanlimits(scan, start_blockno, numblocks);
+		table_setscanlimits(scan, start_blockno, numblocks);
 	else
 	{
 		/* syncscan can only be requested on whole relation */
@@ -2588,7 +2589,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 	/*
 	 * Scan all tuples in the base relation.
 	 */
-	while ((heapTuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while ((heapTuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		bool		tupleIsAlive;
 
@@ -2652,8 +2653,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 			 * CREATE INDEX and ANALYZE may produce wildly different reltuples
 			 * values, e.g. when there are many recently-dead tuples.
 			 */
-			switch (HeapTupleSatisfiesVacuum(heapTuple, OldestXmin,
-											 scan->rs_cbuf))
+			switch (HeapTupleSatisfiesVacuum(heapTuple, OldestXmin, scan->rs_cbuf))
 			{
 				case HEAPTUPLE_DEAD:
 					/* Definitely dead, we can ignore it */
@@ -2932,7 +2932,7 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 		}
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 
 	/* we can now forget our snapshot, if set and registered by us */
 	if (need_unregister_snapshot)
@@ -2967,7 +2967,7 @@ IndexCheckExclusion(Relation heapRelation,
 					Relation indexRelation,
 					IndexInfo *indexInfo)
 {
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	heapTuple;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
@@ -3004,14 +3004,14 @@ IndexCheckExclusion(Relation heapRelation,
 	 * Scan all live tuples in the base relation.
 	 */
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = heap_beginscan_strat(heapRelation,	/* relation */
-								snapshot,	/* snapshot */
-								0,	/* number of keys */
-								NULL,	/* scan key */
-								true,	/* buffer access strategy OK */
-								true);	/* syncscan OK */
+	scan = table_beginscan_strat(heapRelation,	/* relation */
+								   snapshot,	/* snapshot */
+								   0,	/* number of keys */
+								   NULL,	/* scan key */
+								   true,	/* buffer access strategy OK */
+								   true);	/* syncscan OK */
 
-	while ((heapTuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while ((heapTuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		CHECK_FOR_INTERRUPTS();
 
@@ -3047,7 +3047,7 @@ IndexCheckExclusion(Relation heapRelation,
 								   estate, true);
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
 
 	ExecDropSingleTupleTableSlot(slot);
@@ -3282,7 +3282,7 @@ validate_index_heapscan(Relation heapRelation,
 						Snapshot snapshot,
 						v_i_state *state)
 {
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	heapTuple;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
@@ -3325,17 +3325,17 @@ validate_index_heapscan(Relation heapRelation,
 	 * here, because it's critical that we read from block zero forward to
 	 * match the sorted TIDs.
 	 */
-	scan = heap_beginscan_strat(heapRelation,	/* relation */
-								snapshot,	/* snapshot */
-								0,	/* number of keys */
-								NULL,	/* scan key */
-								true,	/* buffer access strategy OK */
-								false); /* syncscan not OK */
+	scan = table_beginscan_strat(heapRelation,	/* relation */
+								   snapshot,	/* snapshot */
+								   0,	/* number of keys */
+								   NULL,	/* scan key */
+								   true,	/* buffer access strategy OK */
+								   false);	/* syncscan not OK */
 
 	/*
 	 * Scan all tuples matching the snapshot.
 	 */
-	while ((heapTuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while ((heapTuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		ItemPointer heapcursor = &heapTuple->t_self;
 		ItemPointerData rootTuple;
@@ -3494,7 +3494,7 @@ validate_index_heapscan(Relation heapRelation,
 		}
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 
 	ExecDropSingleTupleTableSlot(slot);
 

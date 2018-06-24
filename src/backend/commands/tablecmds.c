@@ -20,6 +20,7 @@
 #include "access/multixact.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/tupconvert.h"
 #include "access/xact.h"
@@ -537,6 +538,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
 	Oid			ofTypeId;
 	ObjectAddress address;
+	Oid			accessMethodId = InvalidOid;
 
 	/*
 	 * Truncate relname to appropriate length (probably a waste of time, as
@@ -742,6 +744,32 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	}
 
 	/*
+	 * look up the access method, verify it can handle the requested features
+	 */
+	if (stmt->accessMethod != NULL)
+	{
+		HeapTuple	tuple;
+
+		tuple = SearchSysCache1(AMNAME, PointerGetDatum(stmt->accessMethod));
+		if (!HeapTupleIsValid(tuple))
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_OBJECT),
+						 errmsg("table access method \"%s\" does not exist",
+								 stmt->accessMethod)));
+		accessMethodId = HeapTupleGetOid(tuple);
+		ReleaseSysCache(tuple);
+	}
+	else if (relkind == RELKIND_RELATION ||
+			relkind == RELKIND_SEQUENCE ||
+			relkind == RELKIND_TOASTVALUE ||
+			relkind == RELKIND_VIEW ||
+			relkind == RELKIND_MATVIEW ||
+			relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		accessMethodId = HEAP_TABLE_AM_OID;
+	}
+
+	/*
 	 * Create the relation.  Inherited defaults and constraints are passed in
 	 * for immediate handling --- since they don't need parsing, they can be
 	 * stored immediately.
@@ -753,6 +781,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 										  InvalidOid,
 										  ofTypeId,
 										  ownerId,
+										  accessMethodId,
 										  descriptor,
 										  list_concat(cookedDefaults,
 													  old_constraints),
@@ -4558,7 +4587,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	ListCell   *l;
 	EState	   *estate;
 	CommandId	mycid;
-	BulkInsertState bistate;
+	void       *bistate;
 	int			hi_options;
 	ExprState  *partqualstate = NULL;
 
@@ -4584,7 +4613,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	if (newrel)
 	{
 		mycid = GetCurrentCommandId(true);
-		bistate = GetBulkInsertState();
+		bistate = table_getbulkinsertstate(newrel);
 
 		hi_options = HEAP_INSERT_SKIP_FSM;
 		if (!XLogIsNeeded())
@@ -4666,7 +4695,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		bool	   *isnull;
 		TupleTableSlot *oldslot;
 		TupleTableSlot *newslot;
-		HeapScanDesc scan;
+		TableScanDesc scan;
 		HeapTuple	tuple;
 		MemoryContext oldCxt;
 		List	   *dropped_attrs = NIL;
@@ -4725,7 +4754,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		 * checking all the constraints.
 		 */
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
-		scan = heap_beginscan(oldrel, snapshot, 0, NULL);
+		scan = table_beginscan(oldrel, snapshot, 0, NULL);
 
 		/*
 		 * Switch to per-tuple memory context and reset it for each tuple
@@ -4733,7 +4762,8 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		 */
 		oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
-		while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+		// FIXME: slotify
+		while ((tuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 		{
 			if (tab->rewrite > 0)
 			{
@@ -4838,7 +4868,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 
 			/* Write the tuple out to the new relation */
 			if (newrel)
-				heap_insert(newrel, tuple, mycid, hi_options, bistate);
+				table_insert(newrel, newslot, mycid, hi_options, bistate);
 
 			ResetExprContext(econtext);
 
@@ -4846,7 +4876,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		}
 
 		MemoryContextSwitchTo(oldCxt);
-		heap_endscan(scan);
+		table_endscan(scan);
 		UnregisterSnapshot(snapshot);
 
 		ExecDropSingleTupleTableSlot(oldslot);
@@ -4858,11 +4888,11 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	heap_close(oldrel, NoLock);
 	if (newrel)
 	{
-		FreeBulkInsertState(bistate);
+		table_freebulkinsertstate(newrel, bistate);
 
 		/* If we skipped writing WAL, then we need to sync the heap. */
 		if (hi_options & HEAP_INSERT_SKIP_WAL)
-			heap_sync(newrel);
+			table_sync(newrel);
 
 		heap_close(newrel, NoLock);
 	}
@@ -5241,7 +5271,7 @@ find_typed_table_dependencies(Oid typeOid, const char *typeName, DropBehavior be
 {
 	Relation	classRel;
 	ScanKeyData key[1];
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tuple;
 	List	   *result = NIL;
 
@@ -5252,9 +5282,9 @@ find_typed_table_dependencies(Oid typeOid, const char *typeName, DropBehavior be
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(typeOid));
 
-	scan = heap_beginscan_catalog(classRel, 1, key);
+	scan = table_beginscan_catalog(classRel, 1, key);
 
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while ((tuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		if (behavior == DROP_RESTRICT)
 			ereport(ERROR,
@@ -5266,7 +5296,7 @@ find_typed_table_dependencies(Oid typeOid, const char *typeName, DropBehavior be
 			result = lappend_oid(result, HeapTupleGetOid(tuple));
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	heap_close(classRel, AccessShareLock);
 
 	return result;
@@ -8445,9 +8475,7 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
 	char	   *conbin;
 	Expr	   *origexpr;
 	ExprState  *exprstate;
-	TupleDesc	tupdesc;
-	HeapScanDesc scan;
-	HeapTuple	tuple;
+	TableScanDesc scan;
 	ExprContext *econtext;
 	MemoryContext oldcxt;
 	TupleTableSlot *slot;
@@ -8482,12 +8510,11 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
 	exprstate = ExecPrepareExpr(origexpr, estate);
 
 	econtext = GetPerTupleExprContext(estate);
-	tupdesc = RelationGetDescr(rel);
-	slot = MakeSingleTupleTableSlot(tupdesc, TTS_TYPE_HEAPTUPLE);
+	slot = table_gimmegimmeslot(rel, NULL);
 	econtext->ecxt_scantuple = slot;
 
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = heap_beginscan(rel, snapshot, 0, NULL);
+	scan = table_beginscan(rel, snapshot, 0, NULL);
 
 	/*
 	 * Switch to per-tuple memory context and reset it for each tuple
@@ -8495,10 +8522,8 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
 	 */
 	oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
-		ExecStoreTuple(tuple, slot, InvalidBuffer, false);
-
 		if (!ExecCheck(exprstate, econtext))
 			ereport(ERROR,
 					(errcode(ERRCODE_CHECK_VIOLATION),
@@ -8510,7 +8535,7 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
 	}
 
 	MemoryContextSwitchTo(oldcxt);
-	heap_endscan(scan);
+	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
 	ExecDropSingleTupleTableSlot(slot);
 	FreeExecutorState(estate);
@@ -8529,8 +8554,8 @@ validateForeignKeyConstraint(char *conname,
 							 Oid pkindOid,
 							 Oid constraintOid)
 {
-	HeapScanDesc scan;
-	HeapTuple	tuple;
+	TableScanDesc scan;
+	TupleTableSlot *slot;
 	Trigger		trig;
 	Snapshot	snapshot;
 
@@ -8565,9 +8590,10 @@ validateForeignKeyConstraint(char *conname,
 	 * ereport(ERROR) and that's that.
 	 */
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = heap_beginscan(rel, snapshot, 0, NULL);
+	scan = table_beginscan(rel, snapshot, 0, NULL);
+	slot = table_gimmegimmeslot(rel, NULL);
 
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		FunctionCallInfoData fcinfo;
 		TriggerData trigdata;
@@ -8585,19 +8611,19 @@ validateForeignKeyConstraint(char *conname,
 		trigdata.type = T_TriggerData;
 		trigdata.tg_event = TRIGGER_EVENT_INSERT | TRIGGER_EVENT_ROW;
 		trigdata.tg_relation = rel;
-		trigdata.tg_trigtuple = tuple;
+		trigdata.tg_trigtuple = ExecFetchSlotTuple(slot);
+		trigdata.tg_trigslot = slot;
 		trigdata.tg_newtuple = NULL;
 		trigdata.tg_trigger = &trig;
-		trigdata.tg_trigtuplebuf = scan->rs_cbuf;
-		trigdata.tg_newtuplebuf = InvalidBuffer;
 
 		fcinfo.context = (Node *) &trigdata;
 
 		RI_FKey_check_ins(&fcinfo);
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
+	ExecDropSingleTupleTableSlot(slot);
 }
 
 static void
@@ -11082,7 +11108,7 @@ AlterTableMoveAll(AlterTableMoveAllStmt *stmt)
 	ListCell   *l;
 	ScanKeyData key[1];
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tuple;
 	Oid			orig_tablespaceoid;
 	Oid			new_tablespaceoid;
@@ -11147,8 +11173,8 @@ AlterTableMoveAll(AlterTableMoveAllStmt *stmt)
 				ObjectIdGetDatum(orig_tablespaceoid));
 
 	rel = heap_open(RelationRelationId, AccessShareLock);
-	scan = heap_beginscan_catalog(rel, 1, key);
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	scan = table_beginscan_catalog(rel, 1, key);
+	while ((tuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		Oid			relOid = HeapTupleGetOid(tuple);
 		Form_pg_class relForm;
@@ -11208,7 +11234,7 @@ AlterTableMoveAll(AlterTableMoveAllStmt *stmt)
 		relations = lappend_oid(relations, relOid);
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	heap_close(rel, AccessShareLock);
 
 	if (relations == NIL)

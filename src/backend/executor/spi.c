@@ -732,7 +732,7 @@ HeapTuple
 SPI_copytuple(HeapTuple tuple)
 {
 	MemoryContext oldcxt;
-	HeapTuple	ctuple;
+	HeapTuple ctuple;
 
 	if (tuple == NULL)
 	{
@@ -955,7 +955,7 @@ char *
 SPI_gettype(TupleDesc tupdesc, int fnumber)
 {
 	Oid			typoid;
-	HeapTuple	typeTuple;
+	HeapTuple typeTuple;
 	char	   *result;
 
 	SPI_result = 0;
@@ -1816,7 +1816,7 @@ spi_printtup(TupleTableSlot *slot, DestReceiver *self)
 		tuptable->free = tuptable->alloced;
 		tuptable->alloced += tuptable->free;
 		tuptable->vals = (HeapTuple *) repalloc_huge(tuptable->vals,
-													 tuptable->alloced * sizeof(HeapTuple));
+														tuptable->alloced * sizeof(HeapTuple));
 	}
 
 	tuptable->vals[tuptable->alloced - tuptable->free] =

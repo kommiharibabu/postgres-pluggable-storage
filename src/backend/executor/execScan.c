@@ -40,7 +40,7 @@ ExecScanFetch(ScanState *node,
 
 	CHECK_FOR_INTERRUPTS();
 
-	if (estate->es_epqTuple != NULL)
+	if (estate->es_epqTupleSlot != NULL)
 	{
 		/*
 		 * We are inside an EvalPlanQual recheck.  Return the test tuple if
@@ -74,12 +74,18 @@ ExecScanFetch(ScanState *node,
 			estate->es_epqScanDone[scanrelid - 1] = true;
 
 			/* Return empty slot if we haven't got a test tuple */
-			if (estate->es_epqTuple[scanrelid - 1] == NULL)
+			// XXX: this is unreachable, no?
+			if (estate->es_epqTupleSlot[scanrelid - 1] == NULL)
 				return ExecClearTuple(slot);
 
+			slot = estate->es_epqTupleSlot[scanrelid - 1];
+
 			/* Store test tuple in the plan node's scan slot */
+			// WHY?
+#ifdef FIXME
 			ExecStoreTuple(estate->es_epqTuple[scanrelid - 1],
 						   slot, InvalidBuffer, false);
+#endif
 
 			/* Check if it meets the access-method conditions */
 			if (!(*recheckMtd) (node, slot))

@@ -57,6 +57,7 @@
 #include "postgres.h"
 
 #include "access/tuptoaster.h"
+#include "access/sysattr.h"
 #include "catalog/pg_type.h"
 #include "commands/sequence.h"
 #include "executor/execExpr.h"
@@ -501,10 +502,18 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			/* The slot should have a valid heap tuple. */
 			Assert(hslot->tuple != NULL);
 
-			/* heap_getsysattr has sufficient defenses against bad attnums */
-			d = heap_getsysattr(hslot->tuple, attnum,
-								innerslot->tts_tupleDescriptor,
-								op->resnull);
+			if (attnum == TableOidAttributeNumber)
+				d = ObjectIdGetDatum(innerslot->tts_tableOid);
+			else
+			{
+				/* heap_getsysattr has sufficient defenses against bad attnums */
+				d = heap_getsysattr(hslot->tuple, attnum,
+									innerslot->tts_tupleDescriptor,
+									op->resnull);
+			}
+#if 0
+			d = slot_getattr(innerslot, attnum, op->resnull);
+#endif
 			*op->resvalue = d;
 
 			EEO_NEXT();
@@ -521,12 +530,27 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 				   TTS_IS_BUFFERTUPLE(outerslot));
 
 			/* The slot should have a valid heap tuple. */
+#if FIXME
+			/* The slot should have a valid heap tuple. */
 			Assert(hslot->tuple != NULL);
+#endif
 
-			/* heap_getsysattr has sufficient defenses against bad attnums */
-			d = heap_getsysattr(hslot->tuple, attnum,
-								outerslot->tts_tupleDescriptor,
-								op->resnull);
+			/*
+			 * hari
+			 * Assert(outerslot->tts_storageslotam->slot_is_physical_tuple(outerslot));
+			 */
+			if (attnum == TableOidAttributeNumber)
+				d = ObjectIdGetDatum(outerslot->tts_tableOid);
+			else
+			{
+				/* heap_getsysattr has sufficient defenses against bad attnums */
+				d = heap_getsysattr(hslot->tuple, attnum,
+									outerslot->tts_tupleDescriptor,
+									op->resnull);
+			}
+#if FIXME
+			d = slot_getattr(outerslot, attnum, op->resnull);
+#endif
 			*op->resvalue = d;
 
 			EEO_NEXT();
@@ -538,13 +562,30 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			Datum		d;
 			HeapTupleTableSlot *hslot = (HeapTupleTableSlot *)scanslot;
 
+#if FIXME
 			/* The slot should have a valid heap tuple. */
 			Assert(hslot->tuple != NULL);
 
-			/* heap_getsysattr has sufficient defenses against bad attnums */
-			d = heap_getsysattr(hslot->tuple, attnum,
-								scanslot->tts_tupleDescriptor,
-								op->resnull);
+			/* these asserts must match defenses in slot_getattr */
+			Assert(scanslot->tts_storage != NULL);
+
+			/*
+			 * hari
+			 * Assert(scanslot->tts_storageslotam->slot_is_physical_tuple(scanslot));
+			 */
+#endif
+			if (attnum == TableOidAttributeNumber)
+				d = ObjectIdGetDatum(scanslot->tts_tableOid);
+			else
+			{
+				/* heap_getsysattr has sufficient defenses against bad attnums */
+				d = heap_getsysattr(hslot->tuple, attnum,
+									scanslot->tts_tupleDescriptor,
+									op->resnull);
+			}
+#if FIXME
+			d = slot_getattr(scanslot, attnum, op->resnull);
+#endif
 			*op->resvalue = d;
 
 			EEO_NEXT();

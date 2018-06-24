@@ -1120,9 +1120,7 @@ acquire_sample_rows(Relation onerel, int elevel,
 			targtuple.t_data = (HeapTupleHeader) PageGetItem(targpage, itemid);
 			targtuple.t_len = ItemIdGetLength(itemid);
 
-			switch (HeapTupleSatisfiesVacuum(&targtuple,
-											 OldestXmin,
-											 targbuffer))
+			switch (HeapTupleSatisfiesVacuum(&targtuple, OldestXmin, targbuffer))
 			{
 				case HEAPTUPLE_LIVE:
 					sample_it = true;

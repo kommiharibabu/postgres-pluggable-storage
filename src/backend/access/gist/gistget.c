@@ -562,7 +562,7 @@ getNextNearest(IndexScanDesc scan)
 		if (GISTSearchItemIsHeap(*item))
 		{
 			/* found a heap item at currently minimal distance */
-			scan->xs_ctup.t_self = item->data.heap.heapPtr;
+			scan->xs_heaptid = item->data.heap.heapPtr;
 			scan->xs_recheck = item->data.heap.recheck;
 			scan->xs_recheckorderby = item->data.heap.recheckDistances;
 			for (i = 0; i < scan->numberOfOrderBys; i++)
@@ -686,7 +686,7 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 							so->pageData[so->curPageData - 1].offnum;
 				}
 				/* continuing to return tuples from a leaf page */
-				scan->xs_ctup.t_self = so->pageData[so->curPageData].heapPtr;
+				scan->xs_heaptid = so->pageData[so->curPageData].heapPtr;
 				scan->xs_recheck = so->pageData[so->curPageData].recheck;
 
 				/* in an index-only scan, also return the reconstructed tuple */

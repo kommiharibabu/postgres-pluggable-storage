@@ -20,7 +20,13 @@
 
 /*----------
  * The executor stores tuples in a "tuple table" which is a List of
- * independent TupleTableSlots.  There are several cases we need to handle:
+ * independent TupleTableSlots.
+ *
+ * XXX The "html-commented out" text below no longer reflects reality, as
+ * physical tuples are now responsibility of table AMs.  But we have kept
+ * "minimal tuples".  Adjust this comment!
+ *
+ * <!-- There are several cases we need to handle:
  *		1. physical tuple in a disk buffer page
  *		2. physical tuple constructed in palloc'ed memory
  *		3. "minimal" physical tuple constructed in palloc'ed memory
@@ -56,6 +62,7 @@
  * had the fatal defect of invalidating any pass-by-reference Datums pointing
  * into the existing slot contents.)  Both copies must contain identical data
  * payloads when this is the case.
+ * -->
  *
  * The Datum/isnull arrays of a TupleTableSlot serve double duty.  When the
  * slot contains a virtual tuple, they are the authoritative data.  When the
@@ -83,11 +90,6 @@
  * the slot and should be freed when the slot's reference to the tuple is
  * dropped.
  *
- * If tts_buffer is not InvalidBuffer, then the slot is holding a pin
- * on the indicated buffer page; drop the pin when we release the
- * slot's reference to that buffer.  (tts_shouldFree should always be
- * false in such a case, since presumably tts_tuple is pointing at the
- * buffer page.)
  *
  * tts_nvalid indicates the number of valid columns in the tts_values/isnull
  * arrays.  When the slot is holding a "virtual" tuple this must be equal
@@ -256,12 +258,18 @@ struct TupleTableSlot
 
 	/* can we optimize away? */
 	MemoryContext tts_mcxt;		/* slot itself is in this context */
+
+	ItemPointerData tts_tid;    /* XXX describe */
+	Oid     tts_tableOid;   /* XXX describe */
+	Oid     tts_tupleOid;   /* XXX describe */
 };
 
+#include <access/htup_details.h>
 typedef struct HeapTupleTableSlot
 {
 	TupleTableSlot base;
 	HeapTuple	tuple;		/* physical tuple */
+	HeapTupleData tupdata;
 	uint32		off;		/* saved state for slot_deform_tuple */
 } HeapTupleTableSlot;
 
@@ -292,6 +300,7 @@ extern TupleTableSlot *MakeTupleTableSlot(TupleDesc tupleDesc, TupleTableSlotTyp
 extern TupleTableSlot *ExecAllocTableSlot(List **tupleTable, TupleDesc desc, TupleTableSlotType st);
 extern void ExecResetTupleTable(List *tupleTable, bool shouldFree);
 extern TupleTableSlot *MakeSingleTupleTableSlot(TupleDesc tupdesc, TupleTableSlotType st);
+extern bool ExecSlotCompare(TupleTableSlot *slot1, TupleTableSlot *slot2);
 extern void ExecDropSingleTupleTableSlot(TupleTableSlot *slot);
 extern void ExecSetSlotDescriptor(TupleTableSlot *slot, TupleDesc tupdesc);
 extern TupleTableSlot *ExecStoreTuple(HeapTuple tuple,
@@ -302,13 +311,15 @@ extern TupleTableSlot *ExecStoreMinimalTuple(MinimalTuple mtup,
 					  TupleTableSlot *slot,
 					  bool shouldFree);
 
+extern void ExecForceStoreHeapTuple(HeapTuple tuple,
+			   TupleTableSlot *slot);
+
 extern TupleTableSlot *ExecStoreVirtualTuple(TupleTableSlot *slot);
 extern TupleTableSlot *ExecStoreAllNullTuple(TupleTableSlot *slot);
 
 extern HeapTuple ExecFetchSlotTuple(TupleTableSlot *slot);
 extern MinimalTuple ExecFetchSlotMinimalTuple(TupleTableSlot *slot);
 extern Datum ExecFetchSlotTupleDatum(TupleTableSlot *slot);
-
 extern TupleTableSlot *ExecCopySlot(TupleTableSlot *dstslot,
 			 TupleTableSlot *srcslot);
 

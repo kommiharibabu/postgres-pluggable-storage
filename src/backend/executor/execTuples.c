@@ -234,7 +234,7 @@ tts_virtual_getsomeattrs(TupleTableSlot *slot, int natts)
 static void
 tts_virtual_materialize(TupleTableSlot *slot)
 {
-	elog(ERROR, "materializing a virtual tuple is not supported");
+	elog(PANIC, "materializing a virtual tuple is not supported");
 }
 
 /*
@@ -459,6 +459,7 @@ tts_heap_store_tuple(TupleTableSlot *slot, HeapTuple tuple, bool shouldFree)
 	hslot->tuple = tuple;
 	hslot->off = 0;
 	RESET_TTS_EMPTY(slot);
+	slot->tts_tid = tuple->t_self;
 
 	if (shouldFree)
 		SET_TTS_SHOULDFREE(slot);
@@ -897,6 +898,7 @@ tts_buffer_store_tuple(TupleTableSlot *slot, HeapTuple tuple, Buffer buffer)
 	slot->tts_nvalid = 0;
 	bslot->base.tuple = tuple;
 	bslot->base.off = 0;
+	slot->tts_tid = tuple->t_self;
 
 	/*
 	 * If tuple is on a disk page, keep the page pinned as long as we hold a
@@ -912,7 +914,8 @@ tts_buffer_store_tuple(TupleTableSlot *slot, HeapTuple tuple, Buffer buffer)
 		if (BufferIsValid(bslot->buffer))
 			ReleaseBuffer(bslot->buffer);
 		bslot->buffer = buffer;
-		IncrBufferRefCount(buffer);
+		if (BufferIsValid(buffer))
+			IncrBufferRefCount(buffer);
 	}
 }
 
@@ -1149,6 +1152,56 @@ MakeSingleTupleTableSlot(TupleDesc tupdesc, TupleTableSlotType st)
 	return slot;
 }
 
+// FIXME this definitely does not belong here.
+/* --------------------------------
+ *     ExecSlotCompare
+ *
+ *     This is a slot comparision function to find out
+ *     whether both the slots are same or not?
+ * --------------------------------
+ */
+bool
+ExecSlotCompare(TupleTableSlot *slot1, TupleTableSlot *slot2)
+{
+	int         attrnum;
+
+	Assert(slot1->tts_tupleDescriptor->natts == slot2->tts_tupleDescriptor->natts);
+
+	slot_getallattrs(slot1);
+	slot_getallattrs(slot2);
+
+	/* Check equality of the attributes. */
+	for (attrnum = 0; attrnum < slot1->tts_tupleDescriptor->natts; attrnum++)
+	{
+		Form_pg_attribute att;
+		TypeCacheEntry *typentry;
+
+		/*
+		 * If one value is NULL and other is not, then they are certainly not
+		 * equal
+		 */
+		if (slot1->tts_isnull[attrnum] != slot2->tts_isnull[attrnum])
+			return false;
+
+		att = TupleDescAttr(slot1->tts_tupleDescriptor, attrnum);
+
+		typentry = lookup_type_cache(att->atttypid, TYPECACHE_EQ_OPR_FINFO);
+		if (!OidIsValid(typentry->eq_opr_finfo.fn_oid))
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_FUNCTION),
+					 errmsg("could not identify an equality operator for type %s",
+							format_type_be(att->atttypid))));
+
+		if (!DatumGetBool(FunctionCall2(&typentry->eq_opr_finfo,
+										slot1->tts_values[attrnum],
+										slot2->tts_values[attrnum])))
+			return false;
+	}
+
+	return true;
+}
+
+
 /* --------------------------------
  *		ExecDropSingleTupleTableSlot
  *
@@ -1301,20 +1354,36 @@ ExecStoreTuple(HeapTuple tuple,
 	if (BufferIsValid(buffer))
 	{
 		if (!TTS_IS_BUFFERTUPLE(slot))
-			elog(ERROR, "trying to store an on-disk heap tuple into wrong type of slot");
+			elog(PANIC, "trying to store an on-disk heap tuple into wrong type of slot");
 		tts_buffer_store_tuple(slot, tuple, buffer);
 	}
 	else
 	{
-		if (!TTS_IS_HEAPTUPLE(slot))
-			elog(ERROR, "trying to store a heap tuple into wrong type of slot");
-		tts_heap_store_tuple(slot, tuple, shouldFree);
-
+		if (TTS_IS_BUFFERTUPLE(slot))
+			tts_buffer_store_tuple(slot, tuple, InvalidBuffer);
+		else if (TTS_IS_HEAPTUPLE(slot))
+			tts_heap_store_tuple(slot, tuple, shouldFree);
+		else
+			elog(PANIC, "trying to store a heap tuple into wrong type of slot");
 	}
+
+	slot->tts_tableOid = tuple->t_tableOid;
 
 	return slot;
 }
 
+
+void
+ExecForceStoreHeapTuple(HeapTuple tuple,
+						TupleTableSlot *slot)
+{
+	ExecClearTuple(slot);
+	heap_deform_tuple(tuple, slot->tts_tupleDescriptor,
+					  slot->tts_values, slot->tts_isnull);
+	slot->tts_tableOid = tuple->t_tableOid;
+	ExecStoreVirtualTuple(slot);
+
+}
 
 /* --------------------------------
  *		ExecStoreMinimalTuple

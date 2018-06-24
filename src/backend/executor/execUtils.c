@@ -121,7 +121,7 @@ CreateExecutorState(void)
 	estate->es_tuple_routing_result_relations = NIL;
 
 	estate->es_trig_target_relations = NIL;
-	estate->es_trig_tuple_slot = NULL;
+	estate->es_trig_return_slot = NULL;
 	estate->es_trig_oldtup_slot = NULL;
 	estate->es_trig_newtup_slot = NULL;
 
@@ -151,7 +151,7 @@ CreateExecutorState(void)
 
 	estate->es_per_tuple_exprcontext = NULL;
 
-	estate->es_epqTuple = NULL;
+	estate->es_epqTupleSlot = NULL;
 	estate->es_epqTupleSet = NULL;
 	estate->es_epqScanDone = NULL;
 	estate->es_sourceText = NULL;
@@ -404,6 +404,63 @@ MakePerTupleExprContext(EState *estate)
 		estate->es_per_tuple_exprcontext = CreateExprContext(estate);
 
 	return estate->es_per_tuple_exprcontext;
+}
+
+TupleTableSlot *
+ExecTriggerGetOldSlot(EState *estate, Relation rel)
+{
+	TupleDesc reldesc = RelationGetDescr(rel);
+	MemoryContext oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+
+	/* FIXME: this should create specific slot type based on rel */
+	if (estate->es_trig_oldtup_slot == NULL)
+		estate->es_trig_oldtup_slot = ExecInitExtraTupleSlot(estate, NULL,
+															  TTS_TYPE_BUFFER);
+
+	if (estate->es_trig_oldtup_slot->tts_tupleDescriptor != reldesc)
+		ExecSetSlotDescriptor(estate->es_trig_oldtup_slot, reldesc);
+
+	MemoryContextSwitchTo(oldcontext);
+
+	return estate->es_trig_oldtup_slot;
+}
+
+TupleTableSlot *
+ExecTriggerGetNewSlot(EState *estate, Relation rel)
+{
+	TupleDesc reldesc = RelationGetDescr(rel);
+	MemoryContext oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+
+	/* FIXME: this should create specific slot type based on rel */
+	if (estate->es_trig_newtup_slot == NULL)
+		estate->es_trig_newtup_slot = ExecInitExtraTupleSlot(estate, NULL,
+															  TTS_TYPE_BUFFER);
+
+	if (estate->es_trig_newtup_slot->tts_tupleDescriptor != reldesc)
+		ExecSetSlotDescriptor(estate->es_trig_newtup_slot, reldesc);
+
+	MemoryContextSwitchTo(oldcontext);
+
+	return estate->es_trig_newtup_slot;
+}
+
+TupleTableSlot *
+ExecTriggerGetReturnSlot(EState *estate, Relation rel)
+{
+	TupleDesc reldesc = RelationGetDescr(rel);
+	MemoryContext oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+
+	/* FIXME: this should create specific slot type based on rel */
+	if (estate->es_trig_return_slot == NULL)
+		estate->es_trig_return_slot = ExecInitExtraTupleSlot(estate, NULL,
+															  TTS_TYPE_BUFFER);
+
+	if (estate->es_trig_return_slot->tts_tupleDescriptor != reldesc)
+		ExecSetSlotDescriptor(estate->es_trig_return_slot, reldesc);
+
+	MemoryContextSwitchTo(oldcontext);
+
+	return estate->es_trig_return_slot;
 }
 
 

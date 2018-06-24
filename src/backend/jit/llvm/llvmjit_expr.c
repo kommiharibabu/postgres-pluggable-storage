@@ -408,9 +408,7 @@ llvm_compile_expr(ExprState *state)
 				{
 					int			attnum = op->d.var.attnum;
 					LLVMValueRef v_attnum;
-					LLVMValueRef v_tuple;
-					LLVMValueRef v_tupleDescriptor;
-					LLVMValueRef v_params[4];
+					LLVMValueRef v_params[3];
 					LLVMValueRef v_syscol;
 					LLVMValueRef v_slot;
 
@@ -423,26 +421,13 @@ llvm_compile_expr(ExprState *state)
 
 					Assert(op->d.var.attnum < 0);
 
-					v_tuple = l_load_struct_gep(b, v_slot,
-												FIELDNO_TUPLETABLESLOT_TUPLE,
-												"v.tuple");
-
-					/*
-					 * Could optimize this a bit for fixed descriptors, but
-					 * this shouldn't be that critical a path.
-					 */
-					v_tupleDescriptor =
-						l_load_struct_gep(b, v_slot,
-										  FIELDNO_TUPLETABLESLOT_TUPLEDESCRIPTOR,
-										  "v.tupledesc");
 					v_attnum = l_int32_const(attnum);
 
-					v_params[0] = v_tuple;
+					v_params[0] = v_slot;
 					v_params[1] = v_attnum;
-					v_params[2] = v_tupleDescriptor;
-					v_params[3] = v_resnullp;
+					v_params[2] = v_resnullp;
 					v_syscol = LLVMBuildCall(b,
-											 llvm_get_decl(mod, FuncHeapGetsysattr),
+											 llvm_get_decl(mod, FuncSlotGetattr),
 											 v_params, lengthof(v_params),
 											 "");
 					LLVMBuildStore(b, v_syscol, v_resvaluep);

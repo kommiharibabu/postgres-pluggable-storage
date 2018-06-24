@@ -2811,8 +2811,6 @@ create trigger sys_col_trig after update on sys_col_table
 	when (new.oid = old.oid)
 	execute procedure sys_col_trig_func();
 update sys_col_table set a = a + 1;
-WARNING:  accessing outer sysvar
-WARNING:  accessing inner sysvar
 NOTICE:  oid of the row did not change
 drop trigger sys_col_trig on sys_col_table;
 drop function sys_col_trig_func;

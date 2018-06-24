@@ -61,6 +61,7 @@
 #include "access/tupdesc_details.h"
 #include "access/tuptoaster.h"
 #include "executor/tuptable.h"
+#include "fmgr.h"
 #include "utils/expandeddatum.h"
 
 
@@ -80,7 +81,7 @@
 /*
  * Return the missing value of an attribute, or NULL if there isn't one.
  */
-static Datum
+Datum
 getmissingattr(TupleDesc tupleDesc,
 			   int attnum, bool *isnull)
 {

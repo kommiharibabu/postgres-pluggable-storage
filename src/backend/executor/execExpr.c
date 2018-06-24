@@ -673,11 +673,9 @@ ExecInitExprRec(Expr *node, ExprState *state,
 					{
 						case INNER_VAR:
 							scratch.opcode = EEOP_INNER_SYSVAR;
-							elog(WARNING, "accessing inner sysvar");
 							break;
 						case OUTER_VAR:
 							scratch.opcode = EEOP_OUTER_SYSVAR;
-							elog(WARNING, "accessing outer sysvar");
 							break;
 
 							/* INDEX_VAR is handled by default case */

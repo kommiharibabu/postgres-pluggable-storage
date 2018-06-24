@@ -167,13 +167,21 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc, int natts)
 		l_load_struct_gep(b, v_slot, FIELDNO_TUPLETABLESLOT_ISNULL,
 						  "tts_ISNULL");
 
-	v_slotoffp = LLVMBuildStructGEP(b, v_slot, FIELDNO_TUPLETABLESLOT_OFF, "");
-	v_slowp = LLVMBuildStructGEP(b, v_slot, FIELDNO_TUPLETABLESLOT_SLOW, "");
+	v_slotoffp = l_sizet_const(0);
+	v_slowp = l_pbool_const(true);
 	v_nvalidp = LLVMBuildStructGEP(b, v_slot, FIELDNO_TUPLETABLESLOT_NVALID, "");
 
-	v_tupleheaderp =
-		l_load_struct_gep(b, v_slot, FIELDNO_TUPLETABLESLOT_TUPLE,
-						  "tupleheader");
+	{
+		LLVMValueRef v_params[1];
+
+		v_params[0] = v_slot;
+
+		v_tupleheaderp = LLVMBuildCall(b,
+										llvm_get_decl(mod, FuncExecHeapifySlot),
+										v_params, lengthof(v_params),
+										"");
+	}
+
 	v_tuplep =
 		l_load_struct_gep(b, v_tupleheaderp, FIELDNO_HEAPTUPLEDATA_DATA,
 						  "tuple");

@@ -315,8 +315,7 @@ lnext:
 
 			/* okay, fetch the tuple */
 			tuple.t_self = erm->curCtid;
-			if (!heap_fetch(erm->relation, SnapshotAny, &tuple, &buffer,
-							false, NULL))
+			if (!heap_fetch(erm->relation, SnapshotAny, &tuple, &buffer, NULL))
 				elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
 
 			/* successful, copy and store tuple */

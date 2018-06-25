@@ -134,7 +134,7 @@ extern void heap_parallelscan_reinitialize(ParallelHeapScanDesc parallel_scan);
 extern HeapScanDesc heap_beginscan_parallel(Relation, ParallelHeapScanDesc);
 
 extern bool heap_fetch(Relation relation, Snapshot snapshot,
-		   HeapTuple tuple, Buffer *userbuf, bool keep_buf,
+		   HeapTuple tuple, Buffer *userbuf,
 		   Relation stats_relation);
 extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
 					   Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,

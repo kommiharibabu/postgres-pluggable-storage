@@ -1878,10 +1878,8 @@ heap_getnext(HeapScanDesc scan, ScanDirection direction)
  * If the tuple is found but fails the time qual check, then false is returned
  * but tuple->t_data is left pointing to the tuple.
  *
- * keep_buf determines what is done with the buffer in the false-result cases.
- * When the caller specifies keep_buf = true, we retain the pin on the buffer
- * and return it in *userbuf (so the caller must eventually unpin it); when
- * keep_buf = false, the pin is released and *userbuf is set to InvalidBuffer.
+ * In the false-result cases the buffer pin is released and *userbuf is set to
+ * InvalidBuffer.
  *
  * stats_relation is the relation to charge the heap_fetch operation against
  * for statistical purposes.  (This could be the heap rel itself, an
@@ -1904,7 +1902,6 @@ heap_fetch(Relation relation,
 		   Snapshot snapshot,
 		   HeapTuple tuple,
 		   Buffer *userbuf,
-		   bool keep_buf,
 		   Relation stats_relation)
 {
 	ItemPointer tid = &(tuple->t_self);
@@ -1934,13 +1931,8 @@ heap_fetch(Relation relation,
 	if (offnum < FirstOffsetNumber || offnum > PageGetMaxOffsetNumber(page))
 	{
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-		if (keep_buf)
-			*userbuf = buffer;
-		else
-		{
-			ReleaseBuffer(buffer);
-			*userbuf = InvalidBuffer;
-		}
+		ReleaseBuffer(buffer);
+		*userbuf = InvalidBuffer;
 		tuple->t_data = NULL;
 		return false;
 	}
@@ -1956,13 +1948,8 @@ heap_fetch(Relation relation,
 	if (!ItemIdIsNormal(lp))
 	{
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-		if (keep_buf)
-			*userbuf = buffer;
-		else
-		{
-			ReleaseBuffer(buffer);
-			*userbuf = InvalidBuffer;
-		}
+		ReleaseBuffer(buffer);
+		*userbuf = InvalidBuffer;
 		tuple->t_data = NULL;
 		return false;
 	}
@@ -2001,14 +1988,9 @@ heap_fetch(Relation relation,
 		return true;
 	}
 
-	/* Tuple failed time qual, but maybe caller wants to see it anyway. */
-	if (keep_buf)
-		*userbuf = buffer;
-	else
-	{
-		ReleaseBuffer(buffer);
-		*userbuf = InvalidBuffer;
-	}
+	/* Tuple failed time qual */
+	ReleaseBuffer(buffer);
+	*userbuf = InvalidBuffer;
 
 	return false;
 }
@@ -5796,7 +5778,7 @@ heap_lock_updated_tuple_rec(Relation rel, ItemPointer tid, TransactionId xid,
 		block = ItemPointerGetBlockNumber(&tupid);
 		ItemPointerCopy(&tupid, &(mytup.t_self));
 
-		if (!heap_fetch(rel, SnapshotAny, &mytup, &buf, false, NULL))
+		if (!heap_fetch(rel, SnapshotAny, &mytup, &buf, NULL))
 		{
 			/*
 			 * if we fail to find the updated version of the tuple, it's

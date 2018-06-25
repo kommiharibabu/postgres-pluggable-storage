@@ -2607,7 +2607,7 @@ EvalPlanQualFetch(EState *estate, Relation relation, int lockmode,
 	{
 		Buffer		buffer;
 
-		if (heap_fetch(relation, &SnapshotDirty, &tuple, &buffer, true, NULL))
+		if (heap_fetch(relation, &SnapshotDirty, &tuple, &buffer, NULL))
 		{
 			HTSU_Result test;
 			HeapUpdateFailureData hufd;
@@ -2766,10 +2766,7 @@ EvalPlanQualFetch(EState *estate, Relation relation, int lockmode,
 		 * the row must have been deleted, so we need do nothing.
 		 */
 		if (tuple.t_data == NULL)
-		{
-			ReleaseBuffer(buffer);
 			return NULL;
-		}
 
 		/*
 		 * As above, if xmin isn't what we're expecting, do nothing.
@@ -2988,7 +2985,7 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 
 				tuple.t_self = *((ItemPointer) DatumGetPointer(datum));
 				if (!heap_fetch(erm->relation, SnapshotAny, &tuple, &buffer,
-								false, NULL))
+								NULL))
 					elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
 
 				if (HeapTupleHeaderGetNatts(tuple.t_data) <

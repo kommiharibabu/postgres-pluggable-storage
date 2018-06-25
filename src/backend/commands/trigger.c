@@ -4288,7 +4288,7 @@ AfterTriggerExecute(AfterTriggerEvent event,
 			if (ItemPointerIsValid(&(event->ate_ctid1)))
 			{
 				ItemPointerCopy(&(event->ate_ctid1), &(tuple1.t_self));
-				if (!heap_fetch(rel, SnapshotAny, &tuple1, &buffer1, false, NULL))
+				if (!heap_fetch(rel, SnapshotAny, &tuple1, &buffer1, NULL))
 					elog(ERROR, "failed to fetch tuple1 for AFTER trigger");
 				LocTriggerData.tg_trigtuple = &tuple1;
 				LocTriggerData.tg_trigtuplebuf = buffer1;
@@ -4305,7 +4305,7 @@ AfterTriggerExecute(AfterTriggerEvent event,
 				ItemPointerIsValid(&(event->ate_ctid2)))
 			{
 				ItemPointerCopy(&(event->ate_ctid2), &(tuple2.t_self));
-				if (!heap_fetch(rel, SnapshotAny, &tuple2, &buffer2, false, NULL))
+				if (!heap_fetch(rel, SnapshotAny, &tuple2, &buffer2, NULL))
 					elog(ERROR, "failed to fetch tuple2 for AFTER trigger");
 				LocTriggerData.tg_newtuple = &tuple2;
 				LocTriggerData.tg_newtuplebuf = buffer2;

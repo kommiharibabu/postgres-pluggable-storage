@@ -238,7 +238,7 @@ ExecCheckTIDVisible(EState *estate,
 		return;
 
 	tuple.t_self = *tid;
-	if (!heap_fetch(rel, SnapshotAny, &tuple, &buffer, false, NULL))
+	if (!heap_fetch(rel, SnapshotAny, &tuple, &buffer, NULL))
 		elog(ERROR, "failed to fetch conflicting tuple for ON CONFLICT");
 	ExecCheckHeapTupleVisible(estate, &tuple, buffer);
 	ReleaseBuffer(buffer);
@@ -876,7 +876,7 @@ ldelete:;
 			{
 				deltuple.t_self = *tupleid;
 				if (!heap_fetch(resultRelationDesc, SnapshotAny,
-								&deltuple, &delbuffer, false, NULL))
+								&deltuple, &delbuffer, NULL))
 					elog(ERROR, "failed to fetch deleted tuple for DELETE RETURNING");
 			}
 

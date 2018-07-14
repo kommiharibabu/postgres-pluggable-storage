@@ -1560,7 +1560,7 @@ vacuum_rel(Oid relid, RangeVar *relation, int options, VacuumParams *params)
 					(options & VACOPT_VERBOSE) != 0);
 	}
 	else
-		lazy_vacuum_rel(onerel, options, params, vac_strategy);
+		heap_vacuum_rel(onerel, options, params, vac_strategy);
 
 	/* Roll back any GUC changes executed by index functions */
 	AtEOXact_GUC(false, save_nestlevel);

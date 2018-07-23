@@ -16,7 +16,6 @@
 
 #include "access/genam.h"
 #include "access/heapam.h"
-#include "access/tableam.h"
 #include "access/htup_details.h"
 #include "access/itup.h"
 #include "access/tupdesc.h"

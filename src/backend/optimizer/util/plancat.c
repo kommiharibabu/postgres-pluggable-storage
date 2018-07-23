@@ -21,7 +21,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/nbtree.h"
-#include "access/tableamapi.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/transam.h"
 #include "access/xlog.h"

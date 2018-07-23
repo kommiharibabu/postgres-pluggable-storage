@@ -12,6 +12,6 @@ subdir = src/backend/access/table
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = tableam.o tableamapi.o tableam_common.o
+OBJS = tableamapi.o tableam_common.o
 
 include $(top_srcdir)/src/backend/common.mk

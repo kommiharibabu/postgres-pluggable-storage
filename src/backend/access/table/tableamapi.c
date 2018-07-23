@@ -13,7 +13,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
-#include "access/tableamapi.h"
+#include "access/tableam.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_proc.h"
 #include "utils/syscache.h"

@@ -16,6 +16,7 @@
 
 #include "access/hash.h"
 #include "access/relscan.h"
+#include "access/tableam.h"
 #include "access/tsmapi.h"
 #include "executor/executor.h"
 #include "executor/nodeSamplescan.h"

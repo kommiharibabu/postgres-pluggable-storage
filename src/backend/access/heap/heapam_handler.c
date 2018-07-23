@@ -23,7 +23,7 @@
 #include "access/heapam.h"
 #include "access/relscan.h"
 #include "access/rewriteheap.h"
-#include "access/tableamapi.h"
+#include "access/tableam.h"
 #include "catalog/pg_am_d.h"
 #include "pgstat.h"
 #include "storage/lmgr.h"

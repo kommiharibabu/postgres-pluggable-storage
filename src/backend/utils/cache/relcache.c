@@ -36,7 +36,7 @@
 #include "access/nbtree.h"
 #include "access/reloptions.h"
 #include "access/sysattr.h"
-#include "access/tableamapi.h"
+#include "access/tableam.h"
 #include "access/tupdesc_details.h"
 #include "access/xact.h"
 #include "access/xlog.h"

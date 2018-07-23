@@ -110,6 +110,7 @@
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
 #include "access/rewriteheap.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/tuptoaster.h"
 #include "access/xact.h"

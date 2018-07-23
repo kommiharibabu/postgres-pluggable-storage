@@ -16,9 +16,7 @@
 #define TQUAL_H
 
 #include "utils/snapshot.h"
-#include "access/tableamapi.h"
 #include "access/xlogdefs.h"
-
 
 /* Static variables representing various special snapshot semantics */
 extern PGDLLIMPORT SnapshotData SnapshotSelfData;
@@ -32,19 +30,6 @@ extern PGDLLIMPORT SnapshotData CatalogSnapshotData;
 #define IsMVCCSnapshot(snapshot)  \
 	((snapshot)->visibility_type == MVCC_VISIBILITY || \
 	 (snapshot)->visibility_type == HISTORIC_MVCC_VISIBILITY)
-
-/*
- * HeapTupleSatisfiesVisibility
- *		True iff heap tuple satisfies a time qual.
- *
- * Notes:
- *	Assumes heap tuple is valid.
- *	Beware of multiple evaluations of snapshot argument.
- *	Hint bits in the HeapTuple's t_infomask may be updated as a side effect;
- *	if so, the indicated buffer is marked dirty.
- */
-#define HeapTupleSatisfiesVisibility(method, slot, snapshot) \
-	(((method)->snapshot_satisfies) (slot, snapshot))
 
 /*
  * To avoid leaking too much knowledge about reorderbuffer implementation

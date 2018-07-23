@@ -103,6 +103,7 @@
 #include "access/brin.h"
 #include "access/gin.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "catalog/index.h"
 #include "catalog/pg_am.h"
